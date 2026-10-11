@@ -18,6 +18,7 @@ from .ai_agent import AIProposeRequest, generate_proposal
 from .agent_run import AgentRunRequest, run_workflow
 from .discovery import discover
 from .providers import ProviderUnavailable, search_config
+from .web_search import WebSearchUnavailable, research, web_search_status
 from .ranking import RankingRejected
 from pydantic import BaseModel, Field
 load_dotenv()
@@ -42,7 +43,8 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_origin_regex=ori
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "vercel" if os.getenv("VERCEL") else "local-demo", "product_search": product_search_status()}
+            "mode": "vercel" if os.getenv("VERCEL") else "local-demo", "product_search": product_search_status(),
+            "web_search": web_search_status()}
 
 
 def product_search_status():
@@ -72,6 +74,25 @@ async def product_search(request: ProductSearchRequest):
         return await discover(request.intent)
     except ProviderUnavailable as exc:
         raise provider_unavailable(exc) from exc
+
+
+class ResearchRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+@app.get("/api/v1/research/status")
+def research_status():
+    return web_search_status()
+
+
+@app.post("/api/v1/research")
+async def web_research(request: ResearchRequest):
+    """General web research for any topic. Returns labeled, unverified sources; proposes nothing."""
+    try:
+        return await research(request.query, max_results=request.max_results)
+    except WebSearchUnavailable as exc:
+        raise HTTPException(503, {"code": "WEB_SEARCH_UNAVAILABLE", "message": str(exc), "provider": "tavily"}) from exc
 
 
 @app.get("/api/v1/catalog")

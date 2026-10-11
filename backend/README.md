@@ -122,3 +122,7 @@ Create a separate Vercel project from this repo with branch `feature/backend` an
 - `CORS_ORIGINS` already defaults to localhost plus `https://trust-layer-henna.vercel.app`. Override it (comma separated) to allow other frontends.
 - On Vercel the SQLite database lives in `/tmp/trustlayer.sqlite3` (override with `TRUSTLAYER_DB_PATH`). Serverless storage is ephemeral, so evaluations, audit history and policy edits reset on cold starts. This is fine for a demo, not for production.
 - After deploying, `GET /health` should report `"mode": "vercel"`.
+
+## Web research (any topic)
+
+`POST /api/v1/research` with `{"query": "...", "max_results": 5}` returns web sources (and a short answer) from the Tavily search API, labeled `web_search` and unverified. Set `TAVILY_API_KEY` in the backend environment to enable it; `GET /api/v1/research/status` and `/health` report whether it is configured. It proposes and executes nothing.
