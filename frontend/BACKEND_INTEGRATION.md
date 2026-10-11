@@ -5,10 +5,11 @@ HTTP client is `src/services/api.ts`, and all response normalization is in
 `src/services/liveContract.ts`. Questions and gaps for the backend are listed in
 [BACKEND_REQUESTS.md](./BACKEND_REQUESTS.md).
 
-> Status: reconciled with the backend code on `feature/backend` (read only, `backend/app/main.py`,
-> `schemas.py`, `engine.py`). Verified by reading the code and by mocked-HTTP tests; the two have
-> **not** yet been run together against a live server. At runtime the frontend also fetches
-> `/openapi.json` and reports differences in the connection popover.
+> Status: reconciled with the backend on `feature/backend` and exercised against a locally running copy of it
+> (health, AI status, catalog, propose for all four scenarios, evaluate, execute 200/403/409, review APPROVE then execute,
+> policies, evaluation list/detail, audit events: all normalized with no contract notes). Luminal inference itself was not
+> run (no credentials), so the "AI completed" path is covered only by mocked responses. The browser UI was not driven
+> against it. The frontend also reads `/openapi.json` at runtime and reports differences in the connection popover.
 
 ## 1. Configuration
 
