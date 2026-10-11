@@ -106,6 +106,15 @@ describe('AI status classification', () => {
 });
 
 describe('backend contract details (feature/backend)', () => {
+  it('only reports the backend as up when /health returns JSON', async () => {
+    // A static host such as Vercel rewrites /health to index.html with a 200.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })));
+    await expect(createHttpClient('').health()).rejects.toBeInstanceOf(ApiError);
+
+    mockFetch(() => ({ status: 200, body: { status: 'ok', service: 'trustlayer-backend' } }));
+    await expect(createHttpClient('').health()).resolves.toMatchObject({ ok: true });
+  });
+
   it('sends APPROVE/REJECT for review decisions', async () => {
     const calls = mockFetch(() => ({ status: 200, body: { evaluation_id: 'ev_1', review_status: 'APPROVE', execution_allowed: true } }));
     await createHttpClient('').reviewDecision('ev_1', 'APPROVED', undefined);
