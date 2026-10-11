@@ -13,6 +13,7 @@ DEFAULT_POLICIES = [
     ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio"]}),
     ("allowed-actions", "Allowed tool actions", {"actions": ["place_order", "view_product"]}),
     ("evidence-review", "Review suspicious evidence", {"require_review_for_suspicious": True}),
+    ("decision-quality", "Decision evidence quality", {"require_review_if_insufficient": False, "min_independent_sources": 1, "require_comparison_for_best": True, "require_cost_quote": True}),
 ]
 
 

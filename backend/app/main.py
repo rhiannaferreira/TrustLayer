@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from . import db
 from .catalog import PRODUCTS
 from .engine import evaluate
+from .quality import validate_quality_policy
+from .evidence_fixtures import list_demo_fixtures
 from .luminal import configured, investigate
 from .schemas import Action, EvaluationRequest, ExecutionRequest, PolicyPatch, ProposeRequest, ReviewDecision
 from .ai_agent import AIProposeRequest, generate_proposal
@@ -59,6 +61,12 @@ def propose(request: ProposeRequest):
 @app.post("/api/v1/agent/propose-ai")
 async def propose_ai(request: AIProposeRequest):
     return await generate_proposal(request)
+@app.get("/api/v1/evidence-fixtures")
+def evidence_fixtures(product_id: str | None = None):
+    """Fictional server-owned evidence records for deterministic demo tests."""
+    return list_demo_fixtures(product_id)
+
+
 @app.get("/api/v1/policies")
 def policies():
     return db.list_policies()
@@ -79,6 +87,11 @@ def validate_policy(pid: str, config: dict):
             raise HTTPException(422, "actions must be a nonempty list of strings")
     if pid == "evidence-review" and type(config.get("require_review_for_suspicious")) is not bool:
         raise HTTPException(422, "require_review_for_suspicious must be true or false")
+    if pid == "decision-quality":
+        try:
+            validate_quality_policy(config)
+        except ValueError as ex:
+            raise HTTPException(422, str(ex)) from ex
 
 
 @app.patch("/api/v1/policies/{policy_id}")

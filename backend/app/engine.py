@@ -4,6 +4,7 @@ import math
 import re
 from uuid import uuid4
 from .catalog import PRODUCTS, alternatives
+from .quality import assess_quality
 from .db import utc_now
 
 SUSPICIOUS = [
@@ -70,6 +71,18 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
         check("Evidence safety", "PASS", "No configured high-risk text patterns found" if not flags
               else "Evidence review policy disabled; flagged evidence did not affect the decision")
 
+    quality_policy = ps.get("decision-quality")
+    quality_config = quality_policy["config"] if quality_policy else {}
+    enforce_quality = bool(quality_policy and quality_policy["enabled"] and
+                           quality_config.get("require_review_if_insufficient", False))
+    quality = assess_quality(request, quality_config, enforced=enforce_quality)
+    if enforce_quality:
+        if quality["status"] == "INSUFFICIENT_EVIDENCE":
+            check("Decision evidence quality", "WARN",
+                  f"{len(quality['missing'])} evidence requirement(s) missing; human review needed")
+        else:
+            check("Decision evidence quality", "PASS", "Configured demo evidence checks passed")
+
     if request.use_ai:
         check("AI evidence analysis", "WARN" if ai_error else "PASS",
               "AI unavailable; review required" if ai_error else "AI advisory response returned (does not grant permissions)")
@@ -93,6 +106,7 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
         "alternatives": recommended,
         "execution_allowed": decision == "ALLOW",
         "policy_versions": {p["id"]: p["version"] for p in policies},
+        "decision_quality": quality,
         "ai_analysis": ai_analysis,
         "ai_status": "error" if ai_error else "completed" if request.use_ai else "not_requested",
         "ai_error": ai_error,
