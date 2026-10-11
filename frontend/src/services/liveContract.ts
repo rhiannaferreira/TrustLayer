@@ -9,6 +9,10 @@
  */
 import type {
   AgentAction,
+  AgentRunSummary,
+  DiscoveredProduct,
+  DiscoverySummary,
+  RankedProduct,
   AiOutcome,
   Alternative,
   CheckStatus,
@@ -454,7 +458,7 @@ export function normalizeCatalog(raw: unknown): Product[] | null {
       {
         id,
         name: str(pick(p, ['name', 'product_name', 'title'])) ?? id,
-        category: str(pick(p, ['category'])) ?? 'unknown',
+        category: str(p.category) ?? 'uncategorized',
         price: num(pick(p, ['price', 'amount'])) ?? NaN,
         vendor: str(pick(p, ['vendor', 'merchant', 'seller'])) ?? '',
         rating: num(p.rating) ?? NaN,
@@ -499,8 +503,142 @@ export function normalizeProposal(raw: unknown, intent: string, agentId: string,
     reasoning: str(pick(v, ['reasoning', 'agent_reasoning', 'rationale', 'explanation'])) ?? '',
     scenario,
     // The team confirmed the propose endpoint uses seeded scenarios; respect an explicit false.
-    seeded: typeof seededFlag === 'boolean' ? seededFlag : v.proposal_source === 'luminal_generated' ? false : true,
+    seeded: typeof seededFlag === 'boolean' ? seededFlag : true,
     notes,
+    raw,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Agent run (POST /api/v1/agent/run): discovery → ranking → proposal → evaluation
+// ---------------------------------------------------------------------------
+
+function strList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/** A product record. Returns null when an authorization-relevant field is missing; nothing is filled in. */
+export function normalizeDiscoveredProduct(v: unknown): DiscoveredProduct | null {
+  if (!isObj(v)) return null;
+  const id = str(v.product_id);
+  const title = str(pick(v, ['title', 'name']));
+  const price = num(v.price);
+  const currency = str(v.currency);
+  if (!id || !title || price === undefined || !currency) return null;
+  return {
+    product_id: id,
+    provider: str(v.provider) ?? 'unknown',
+    provider_product_id: str(v.provider_product_id),
+    title,
+    category: str(v.category) ?? null,
+    category_source: str(v.category_source),
+    provider_category: str(v.provider_category) ?? null,
+    price,
+    currency,
+    seller: str(pick(v, ['seller', 'vendor'])) ?? null,
+    product_url: typeof v.product_url === 'string' && /^https:\/\//.test(v.product_url) ? v.product_url : null,
+    image_url: str(v.image_url) ?? null,
+    availability: str(v.availability),
+    condition: str(v.condition) ?? null,
+    rating: num(v.rating) ?? null,
+    source: str(v.source) ?? 'unknown',
+    provenance: str(v.provenance) ?? 'unknown',
+    provider_fields: strList(v.provider_fields),
+    unverified_fields: strList(v.unverified_fields),
+    requirements_matched: strList(v.requirements_matched),
+    requirements_unconfirmed: strList(v.requirements_unconfirmed),
+    notes: strList(v.notes),
+    retrieved_at: str(v.retrieved_at),
+  };
+}
+
+function normalizeRanked(v: unknown): RankedProduct | null {
+  if (!isObj(v)) return null;
+  const product = normalizeDiscoveredProduct(v.product);
+  if (!product) return null;
+  return { product, rank: num(v.rank) ?? 0, reason: str(v.reason) ?? null, tradeoffs: str(v.tradeoffs) ?? null };
+}
+
+function normalizeDiscovery(v: unknown, problems: string[]): DiscoverySummary {
+  const d = isObj(v) ? v : {};
+  if (!isObj(v)) problems.push('`discovery` must be an object');
+  const q = isObj(d.query) ? d.query : {};
+  const counts: Record<string, number> = {};
+  if (isObj(d.excluded_counts)) for (const [k, n] of Object.entries(d.excluded_counts)) if (num(n) !== undefined) counts[k] = num(n)!;
+  const noMatch = isObj(d.no_match) ? { code: str(d.no_match.code) ?? 'NO_MATCH', message: str(d.no_match.message) ?? '' } : null;
+  return {
+    search_id: str(d.search_id) ?? '',
+    status: str(d.status) ?? 'UNKNOWN',
+    query: {
+      categories: strList(q.categories),
+      requirements: strList(q.requirements),
+      max_price: num(q.max_price) ?? null,
+      min_price: num(q.min_price) ?? null,
+      currency: str(q.currency) ?? 'USD',
+    },
+    catalog_mode: str(d.catalog_mode) ?? 'unknown',
+    provider: str(d.provider) ?? 'unknown',
+    provider_error: str(d.provider_error) ?? null,
+    returned_count: num(d.returned_count) ?? 0,
+    matched_count: num(d.matched_count) ?? 0,
+    excluded_counts: counts,
+    excluded: Array.isArray(d.excluded)
+      ? d.excluded.flatMap((e) =>
+          isObj(e) && str(e.product_id)
+            ? [{ product_id: str(e.product_id)!, title: str(e.title) ?? '', category: str(e.category) ?? null, price: num(e.price) ?? NaN, currency: str(e.currency) ?? '', reason: str(e.reason) ?? '' }]
+            : [],
+        )
+      : [],
+    results: Array.isArray(d.results) ? d.results.map(normalizeDiscoveredProduct).filter((p): p is DiscoveredProduct => p !== null) : [],
+    no_match: noMatch,
+  };
+}
+
+export interface LiveAgentRun {
+  summary: AgentRunSummary;
+  /** The proposal as evaluated by the backend; null for NO_MATCH. */
+  proposal: { request: EvaluationRequest; reasoning: string; source: string } | null;
+  evaluation: NormalizedEvaluation | null;
+  raw: unknown;
+}
+
+export function normalizeAgentRun(raw: unknown, intent: string, agentId: string, policyId: string): LiveAgentRun {
+  if (!isObj(raw)) throw new ContractError(['agent run response is not a JSON object'], raw);
+  const problems: string[] = [];
+  const status = str(raw.status);
+  if (!status) problems.push('`status` must be a string');
+  const discovery = normalizeDiscovery(raw.discovery, problems);
+  const ranking = isObj(raw.ranking) ? { ranking_source: str(raw.ranking.ranking_source) ?? 'unknown', summary: str(raw.ranking.summary) ?? null } : null;
+  const recommendation = raw.recommendation == null ? null : normalizeRanked(raw.recommendation);
+  if (raw.recommendation != null && !recommendation) problems.push('`recommendation.product` is missing an id, title, price or currency');
+  const alternatives = Array.isArray(raw.alternatives) ? raw.alternatives.map(normalizeRanked).filter((a): a is RankedProduct => a !== null) : [];
+
+  let proposal: LiveAgentRun['proposal'] = null;
+  let evaluation: NormalizedEvaluation | null = null;
+  if (status !== 'NO_MATCH') {
+    const p = isObj(raw.proposal) ? raw.proposal : null;
+    const action = p ? normalizeAction(p.action) : undefined;
+    if (!p || !action) problems.push('`proposal.action` is required unless status is NO_MATCH');
+    if (!isObj(raw.evaluation)) problems.push('`evaluation` is required unless status is NO_MATCH');
+    if (!recommendation) problems.push('`recommendation` is required unless status is NO_MATCH');
+    if (problems.length) throw new ContractError(problems, raw);
+    const request: EvaluationRequest = {
+      agent_id: str(p!.agent_id) ?? agentId,
+      intent: str(p!.intent) ?? intent,
+      action: action!,
+      evidence: normalizeEvidence(p!.evidence),
+      policy_id: str(p!.policy_id) ?? policyId,
+    };
+    const reasoning = str(p!.agent_reasoning) ?? '';
+    proposal = { request, reasoning, source: str(p!.proposal_source) ?? 'unknown' };
+    evaluation = normalizeEvaluation(raw.evaluation, request);
+  } else if (problems.length) {
+    throw new ContractError(problems, raw);
+  }
+  return {
+    summary: { status: status!, message: str(raw.message) ?? discovery.no_match?.message ?? null, discovery, ranking, recommendation, alternatives },
+    proposal,
+    evaluation,
     raw,
   };
 }

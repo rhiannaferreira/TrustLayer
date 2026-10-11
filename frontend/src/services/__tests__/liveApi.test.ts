@@ -127,3 +127,10 @@ describe('backend contract details (feature/backend)', () => {
     expect(r.duplicate).toBeUndefined();
   });
 });
+
+describe('health check', () => {
+  it('does not treat an HTML page served at /health as a backend', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })));
+    await expect(createHttpClient('').health()).rejects.toThrow(/not JSON/);
+  });
+});

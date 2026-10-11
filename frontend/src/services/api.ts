@@ -12,6 +12,7 @@ import {
   executionMessage,
   executionReference,
   isObj,
+  normalizeAgentRun,
   normalizeAiStatus,
   normalizeCatalog,
   normalizeEvaluation,
@@ -19,6 +20,7 @@ import {
   normalizeProposal,
   unwrapList,
   type AiServiceStatus,
+  type LiveAgentRun,
   type LivePolicy,
   type LiveProposal,
   type NormalizedEvaluation,
@@ -54,6 +56,8 @@ export type ReviewOutcome = 'APPROVED' | 'REJECTED';
 const DEFAULT_TIMEOUT_MS = 15_000;
 /** AI-assisted evaluations can take longer than plain policy checks. */
 const EVALUATION_TIMEOUT_MS = 60_000;
+/** Product search + AI ranking + evaluation (+ optional AI critique) in one call. */
+const AGENT_RUN_TIMEOUT_MS = 120_000;
 
 interface RawResponse {
   status: number;
@@ -139,6 +143,8 @@ export function createHttpClient(baseUrl: string) {
     async health(): Promise<HealthStatus> {
       const started = performance.now();
       const body = await request(ENDPOINTS.health, { method: 'GET' }, undefined, 4_000);
+      // A static host's SPA fallback answers /health with index.html (HTTP 200); that is not a backend.
+      if (typeof body === 'string') throw new ApiError('/health returned a web page, not JSON: no backend is serving this address', ENDPOINTS.health);
       return { ok: true, latency_ms: Math.round(performance.now() - started), body };
     },
 
@@ -163,10 +169,18 @@ export function createHttpClient(baseUrl: string) {
       return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentPropose, trace);
     },
 
-    /** Live model-selected proposal from category/budget-filtered fictional catalog. */
-    async proposeAi(input: { agent_id: string; intent: string; policy_id: string }, trace?: Trace): Promise<LiveProposal> {
-      const body = await request(ENDPOINTS.agentProposeAi, { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent } }, trace, EVALUATION_TIMEOUT_MS);
-      return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentProposeAi, trace);
+    /**
+     * Live AI agent: the backend searches products for the actual request, ranks only matching
+     * results, proposes one and evaluates it. It never executes. NO_MATCH is a normal result.
+     */
+    async agentRun(input: { agent_id: string; intent: string; policy_id: string; use_ai: boolean; rank_with_ai?: boolean }, trace?: Trace): Promise<LiveAgentRun> {
+      const body = await request(
+        ENDPOINTS.agentRun,
+        { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent, use_ai: input.use_ai, rank_with_ai: input.rank_with_ai ?? true } },
+        trace,
+        AGENT_RUN_TIMEOUT_MS,
+      );
+      return wrapContract(() => normalizeAgentRun(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentRun, trace);
     },
 
     async evaluate(payload: EvaluationRequest, trace?: Trace): Promise<NormalizedEvaluation & { raw: unknown }> {

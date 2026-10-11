@@ -1,9 +1,10 @@
 import { Bot, Play, Square, FileText, Store, Tag, Package } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
+import { Segmented } from '@/components/ui/Segmented';
 import { PLAYGROUND_PRESETS } from '@/data/scenarios';
 import { actionLabel } from '@/data/agents';
-import { formatCurrency } from '@/lib/format';
+import { formatMoney } from './DiscoveryPanel';
 import { cn } from '@/lib/cn';
 import type { AgentProposal } from '@/services/agentPlanner';
 
@@ -18,10 +19,15 @@ interface AgentPanelProps {
   live?: boolean;
   scenario?: string;
   onScenarioChange?: (scenario: string) => void;
-  seededMode?: boolean;
+  /** Live Backend Mode only: real discovery agent, or the seeded demo scenarios. */
+  liveMode?: LiveAgentMode;
+  onLiveModeChange?: (mode: LiveAgentMode) => void;
 }
 
-export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live, scenario, onScenarioChange, seededMode }: AgentPanelProps) {
+export type LiveAgentMode = 'ai' | 'seeded';
+
+export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live, scenario, onScenarioChange, liveMode = 'ai', onLiveModeChange }: AgentPanelProps) {
+  const seeded = live && liveMode === 'seeded';
   const params = proposal?.request.action.parameters;
   return (
     <div className="space-y-4">
@@ -34,6 +40,20 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
           <p className="text-xs text-faint">Autonomous purchasing agent · tools: search, compare, place_order</p>
         </div>
       </div>
+
+      {live && onLiveModeChange && (
+        <div className="space-y-1">
+          <Segmented<LiveAgentMode>
+            label="Agent mode"
+            value={liveMode}
+            onChange={(m) => !running && onLiveModeChange(m)}
+            options={[
+              { value: 'ai', label: 'Live AI agent' },
+              { value: 'seeded', label: 'Seeded demo scenario' },
+            ]}
+          />
+        </div>
+      )}
 
       <form
         onSubmit={(e) => {
@@ -106,7 +126,7 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             </ol>
           )}
         </div>
-        {live && seededMode && onScenarioChange && (
+        {seeded && onScenarioChange && (
           <label className="mt-2 block text-xs text-muted">
             Seeded backend scenario
             <select className="input mt-1" value={scenario} onChange={(e) => onScenarioChange(e.target.value)}>
@@ -118,7 +138,11 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
           </label>
         )}
         <p className="mt-1.5 text-2xs text-faint">
-          {live ? (seededMode ? 'Seeded scenario from the backend. No LLM proposal generated.' : 'Luminal ranks category- and budget-matched fictional demo catalog items; no real retailer search.') : 'Demo agent: deterministic rule-based planner, not an LLM.'}
+          {!live
+            ? 'Demo agent: deterministic rule-based planner over a fictional headphone catalog, not an LLM.'
+            : seeded
+              ? 'Seeded demo: POST /api/v1/agent/propose returns fixed headphone scenarios for demos and attack testing. It ignores the category you type.'
+              : 'Live AI agent: POST /api/v1/agent/run searches products for the category and budget you type, ranks only matching results, proposes one and evaluates it. It never buys anything.'}
         </p>
       </div>
 
@@ -129,8 +153,8 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             <Badge tone="accent">{actionLabel(proposal.request.action.type)}</Badge>
           </div>
           <dl className="grid grid-cols-2 gap-2 text-sm">
-            <Item icon={Package} label="Product" value={(params.product_name as string) ?? (params.product_id as string) ?? '—'} wide />
-            <Item icon={Tag} label="Price" value={params.price !== undefined ? formatCurrency(params.price) : '—'} />
+            <Item icon={Package} label="Product" value={(params.product_name as string) ?? proposal.product?.name ?? (params.product_id as string) ?? '—'} wide />
+            <Item icon={Tag} label="Price" value={params.price !== undefined ? formatMoney(Number(params.price), typeof params.currency === 'string' ? params.currency : 'USD') : '—'} />
             <Item icon={Store} label="Vendor" value={(params.vendor as string) ?? '—'} />
           </dl>
           <p className="mt-3 text-xs text-muted">

@@ -23,6 +23,21 @@ export interface AgentProposal {
 
 const AGENT_ID = 'purchase-pilot';
 
+/** Categories the headphone-only demo catalog cannot serve. */
+const OTHER_CATEGORY =
+  /\b(shoes?|sneakers?|boots?|trainers|sandals?|footwear|laptops?|chromebooks?|macbooks?|notebook computers?|backpacks?|rucksacks?|daypacks?|monitors?|keyboards?|jackets?|coats?|smart ?watch(?:es)?)\b/i;
+const HEADPHONES = /\b(head ?phones?|earbuds?|ear ?phones?|headsets?)\b/i;
+
+/** Thrown instead of substituting a headphone when the goal asks for another category. */
+export class DemoNoMatchError extends Error {
+  constructor(readonly requested: string) {
+    super(
+      `The Demo Mode planner only has a fictional headphone catalog, so it has no ${requested} to propose. It will not substitute headphones. Switch to Live Backend Mode to search other categories.`,
+    );
+    this.name = 'DemoNoMatchError';
+  }
+}
+
 function permissions(): string[] {
   return getAgent(AGENT_ID)?.permissions ?? [];
 }
@@ -33,6 +48,8 @@ function confidenceScore(p: Product): number {
 }
 
 export function planFromGoal(goal: string): AgentProposal {
+  const other = goal.match(OTHER_CATEGORY);
+  if (other && !HEADPHONES.test(goal)) throw new DemoNoMatchError(other[0].toLowerCase());
   const text = goal.toLowerCase();
   const budget = parseIntentBudget(goal);
 
@@ -111,7 +128,7 @@ export function planFromAlternative(alt: Alternative, previous: EvaluationReques
     name: alt.name,
     price: alt.price,
     vendor: alt.vendor,
-    category: 'headphones',
+    category: 'unknown',
     rating: 0,
     review_count: 0,
     features: [],

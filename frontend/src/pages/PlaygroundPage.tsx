@@ -1,25 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Bot, ScanSearch, History, ListChecks, Braces, ChevronDown, Network, Sparkles, Loader2 } from 'lucide-react';
+import { Bot, ScanSearch, History, ListChecks, Braces, ChevronDown, Network, Sparkles, Loader2, PackageSearch } from 'lucide-react';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Panel } from '@/components/ui/Panel';
 import { Badge, DecisionBadge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Overlay';
 import { Toggle } from '@/components/ui/Toggle';
 import { ErrorBanner, errorMessage } from '@/components/ui/ErrorBanner';
-import { AgentPanel } from '@/components/playground/AgentPanel';
+import { AgentPanel, type LiveAgentMode } from '@/components/playground/AgentPanel';
+import { DiscoveryPanel, catalogModeBadge } from '@/components/playground/DiscoveryPanel';
 import { InspectorPanel } from '@/components/playground/InspectorPanel';
-import { AgentTimeline, buildAgentTimeline, type RunPhase } from '@/components/playground/AgentTimeline';
+import { AgentTimeline, buildAgentTimeline, type ProposalSource, type RunPhase } from '@/components/playground/AgentTimeline';
 import { EvidenceList, aiSuspicionFlags } from '@/components/evaluation/EvidenceList';
 import { ExchangeLog } from '@/components/evaluation/ExchangeLog';
 import { useAppStore, useRecord } from '@/context/AppStore';
 import { useToast } from '@/context/ToastContext';
-import { planFromAlternative, planFromGoal, type AgentProposal } from '@/services/agentPlanner';
+import { DemoNoMatchError, planFromAlternative, planFromGoal, type AgentProposal } from '@/services/agentPlanner';
 import { effectiveReviewStatus } from '@/lib/records';
 import { PLAYGROUND_PRESETS } from '@/data/scenarios';
 import { formatCurrency, formatTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import type { ApiExchange } from '@/types';
+import type { AgentRunSummary, ApiExchange, DiscoveredProduct, EvaluationRecord, Product } from '@/types';
 
 const ACTIVITY_STEP_MS = 260;
 const SESSION_KEY = 'trustlayer.playground.v2';
@@ -28,6 +29,16 @@ interface SessionState {
   goal: string;
   recordId: string | null;
   runIds: string[];
+  liveMode?: LiveAgentMode;
+}
+
+function productFrom(p: DiscoveredProduct): Product {
+  return { id: p.product_id, name: p.title, category: p.category ?? 'unknown', price: p.price, vendor: p.seller ?? '', rating: p.rating ?? NaN, review_count: NaN, features: [] };
+}
+
+function sourceOf(r: EvaluationRecord): ProposalSource {
+  if (r.source !== 'api') return 'demo-planner';
+  return r.scenario === 'agent-run' ? 'backend-agent' : 'backend-seeded';
 }
 
 function loadSession(): SessionState {
@@ -42,17 +53,19 @@ function loadSession(): SessionState {
 
 export function PlaygroundPage() {
   const initial = useRef(loadSession()).current;
-  const { runEvaluation, requestReview, dataSource, getRecord, proposeLive, proposeAiLive, settings } = useAppStore();
+  const { runEvaluation, requestReview, dataSource, getRecord, proposeLive, runAgentLive, settings } = useAppStore();
   const { notify } = useToast();
   const navigate = useNavigate();
   const live = dataSource === 'api';
 
   const [goal, setGoal] = useState(initial.goal);
   const [liveScenario, setLiveScenario] = useState('valid');
-  const [agentMode, setAgentMode] = useState<'live-ai' | 'seeded'>('live-ai');
+  const [liveMode, setLiveMode] = useState<LiveAgentMode>(initial.liveMode ?? 'ai');
+  const [agentRun, setAgentRun] = useState<AgentRunSummary | null>(null);
+  const [noMatch, setNoMatch] = useState<string | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
   const [proposal, setProposal] = useState<AgentProposal | null>(null);
-  const [proposalSource, setProposalSource] = useState<'backend-seeded' | 'luminal-agent' | 'demo-planner' | null>(null);
+  const [proposalSource, setProposalSource] = useState<ProposalSource | null>(null);
   const [proposalScenario, setProposalScenario] = useState<string | undefined>();
   const [recordId, setRecordId] = useState<string | null>(initial.recordId);
   const [runIds, setRunIds] = useState<string[]>(initial.runIds);
@@ -70,15 +83,13 @@ export function PlaygroundPage() {
 
   const record = useRecord(recordId);
   const running = phase === 'proposing' || phase === 'evaluating';
+  const agentMode = live && liveMode === 'ai';
 
   // Restore the last run (e.g. after navigating away and back).
   useEffect(() => {
     const existing = initial.recordId ? getRecord(initial.recordId) : undefined;
     if (existing) {
-      setProposal({ activity: [], request: existing.request, reasoning: existing.request.context?.agent_reasoning ?? '', path: 'budget' });
-      setPhase('done');
-      setStartedAt(existing.response.created_at);
-      setProposalSource(existing.source === 'api' ? 'backend-seeded' : 'demo-planner');
+      restore(existing);
     } else {
       setRecordId(null);
     }
@@ -87,11 +98,35 @@ export function PlaygroundPage() {
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify({ goal, recordId, runIds }));
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({ goal, recordId, runIds, liveMode }));
     } catch {
       /* ignore */
     }
-  }, [goal, recordId, runIds]);
+  }, [goal, recordId, runIds, liveMode]);
+
+  function restore(r: EvaluationRecord) {
+    const recommended = r.agent_run?.recommendation?.product;
+    setProposal({ activity: [], request: r.request, reasoning: r.request.context?.agent_reasoning ?? '', path: 'budget', product: recommended ? productFrom(recommended) : undefined });
+    setPhase('done');
+    setStartedAt(r.response.created_at);
+    setProposalSource(sourceOf(r));
+    setAgentRun(r.agent_run ?? null);
+    setNoMatch(null);
+  }
+
+  const resetRun = () => {
+    setStartedAt(new Date().toISOString());
+    setError(null);
+    setErrorAt(null);
+    setRecordId(null);
+    setProposal(null);
+    setProposalSource(null);
+    setProposalScenario(undefined);
+    setActivity([]);
+    setPendingExchanges([]);
+    setAgentRun(null);
+    setNoMatch(null);
+  };
 
   const fail = (err: unknown, at: 'proposal' | 'evaluation') => {
     setError(err);
@@ -101,24 +136,23 @@ export function PlaygroundPage() {
   };
 
   const execute = useCallback(
-    async (getPlan: () => Promise<{ plan: AgentProposal; source: 'backend-seeded' | 'luminal-agent' | 'demo-planner'; scenario?: string; trace: ApiExchange[] }>, retryOf?: string) => {
+    async (getPlan: () => Promise<{ plan: AgentProposal; source: ProposalSource; scenario?: string; trace: ApiExchange[] }>, retryOf?: string) => {
       const token = ++cancelRef.current;
       setPhase('proposing');
-      setStartedAt(new Date().toISOString());
-      setError(null);
-      setErrorAt(null);
-      setRecordId(null);
-      setProposal(null);
-      setProposalSource(null);
-      setProposalScenario(undefined);
-      setActivity([]);
-      setPendingExchanges([]);
+      resetRun();
 
       let planned: Awaited<ReturnType<typeof getPlan>>;
       try {
         planned = await getPlan();
       } catch (err) {
-        if (token === cancelRef.current) fail(err, 'proposal');
+        if (token !== cancelRef.current) return;
+        if (err instanceof DemoNoMatchError) {
+          setActivity([`Parsing goal: requested ${err.requested}.`, 'Demo catalog contains headphones only: no matching products.']);
+          setNoMatch(err.message);
+          setPhase('no_match');
+          return;
+        }
+        fail(err, 'proposal');
         return;
       }
       if (token !== cancelRef.current) return;
@@ -148,29 +182,77 @@ export function PlaygroundPage() {
     [runEvaluation, useAi],
   );
 
-  const onRun = () =>
+  /** Live AI agent: one backend call searches, ranks, proposes and evaluates. Nothing is executed. */
+  const runLiveAgent = async () => {
+    const token = ++cancelRef.current;
+    setPhase('proposing');
+    resetRun();
+    setActivity([`Task sent to the backend agent: “${goal}”`, 'Searching products for the requested category, budget and currency…']);
+    const trace: ApiExchange[] = [];
+    try {
+      const { run, record } = await runAgentLive(goal, useAi, trace);
+      if (token !== cancelRef.current) return;
+      const d = run.summary.discovery;
+      const lines = [
+        `Parsed request: ${d.query.categories.join(' or ') || 'category not recognised'}${d.query.max_price !== null ? ` · budget ${d.query.max_price} ${d.query.currency}` : ''}${d.query.requirements.length ? ` · ${d.query.requirements.join(', ')}` : ''}.`,
+        `${catalogModeBadge(run.summary).label}: ${d.returned_count} listings returned, ${d.matched_count} matched.`,
+      ];
+      setAgentRun(run.summary);
+      setPendingExchanges(trace);
+      if (!record || !run.summary.recommendation) {
+        setActivity((a) => [...a, ...lines, 'No matching products. Nothing proposed or evaluated.']);
+        setNoMatch(run.summary.message ?? 'No matching products.');
+        setPhase('no_match');
+        return;
+      }
+      const top = run.summary.recommendation.product;
+      setActivity((a) => [
+        ...a,
+        ...lines,
+        `Ranked ${d.matched_count} matching product${d.matched_count === 1 ? '' : 's'} with ${run.summary.ranking?.ranking_source === 'luminal' ? 'Luminal' : 'deterministic rules (no AI)'}.`,
+        `Proposed place_order · ${top.title} · ${top.price} ${top.currency} · ${top.seller ?? 'seller not provided'}.`,
+        `TrustLayer decision: ${record.response.decision}.`,
+      ]);
+      setProposal({ activity: [], request: record.request, reasoning: run.proposal?.reasoning ?? '', path: 'budget', product: productFrom(top) });
+      setProposalSource('backend-agent');
+      setRecordId(record.id);
+      setRunIds((ids) => [record.id, ...ids.filter((x) => x !== record.id)].slice(0, 8));
+      setPhase('done');
+    } catch (err) {
+      if (token !== cancelRef.current) return;
+      setPendingExchanges(trace);
+      fail(err, 'proposal');
+    }
+  };
+
+  const onRun = () => {
+    if (agentMode) {
+      void runLiveAgent();
+      return;
+    }
     void execute(async () => {
       if (!live) return { plan: planFromGoal(goal), source: 'demo-planner' as const, trace: [] };
       const trace: ApiExchange[] = [];
       try {
-        const p = agentMode === 'seeded' ? await proposeLive(goal, liveScenario, trace) : await proposeAiLive(goal, trace);
+        const p = await proposeLive(goal, liveScenario, trace);
         const plan: AgentProposal = {
           path: 'budget',
           reasoning: p.reasoning,
           request: { ...p.request, context: p.reasoning ? { agent_reasoning: p.reasoning } : undefined },
           activity: [
             `Task sent to the backend agent: “${goal}”`,
-            agentMode === 'seeded' ? `Backend returned a seeded proposal${p.scenario ? ` (scenario ${p.scenario})` : ''}.` : 'Luminal selected a category- and budget-matched demo catalog product.',
+            `Backend returned a seeded proposal${p.scenario ? ` (scenario ${p.scenario})` : ''}.`,
             `Proposed ${p.request.action.type}${typeof p.request.action.parameters.price === 'number' ? ` · ${formatCurrency(p.request.action.parameters.price)}` : ''}${p.request.action.parameters.vendor ? ` · ${p.request.action.parameters.vendor}` : ''}.`,
             'Submitting to TrustLayer for authorization.',
           ],
         };
-        return { plan, source: agentMode === 'seeded' ? ('backend-seeded' as const) : ('luminal-agent' as const), scenario: p.scenario, trace };
+        return { plan, source: 'backend-seeded' as const, scenario: p.scenario, trace };
       } catch (err) {
         setPendingExchanges(trace);
         throw err;
       }
     });
+  };
 
   const onStop = () => {
     cancelRef.current++;
@@ -182,7 +264,7 @@ export function PlaygroundPage() {
     if (!record) return;
     const alt = record.response.alternatives[0];
     if (!alt) return;
-    void execute(async () => ({ plan: planFromAlternative(alt, record.request, record.id), source: live ? ('demo-planner' as const) : ('demo-planner' as const), trace: [] }), record.id);
+    void execute(async () => ({ plan: planFromAlternative(alt, record.request, record.id), source: 'demo-planner' as const, trace: [] }), record.id);
   };
 
   const onRequestReview = async () => {
@@ -205,6 +287,9 @@ export function PlaygroundPage() {
         source: dataSource,
         proposalSource,
         proposalScenario,
+        agentMode: agentMode || proposalSource === 'backend-agent',
+        agentRun,
+        noMatchMessage: noMatch,
         startedAt,
         record: phase === 'done' ? record ?? null : null,
         useAi: live && useAi,
@@ -212,10 +297,10 @@ export function PlaygroundPage() {
         errorMessage: error ? errorMessage(error).detail : undefined,
         executing,
       }),
-    [phase, dataSource, proposalSource, proposalScenario, startedAt, record, live, useAi, errorAt, error, executing],
+    [phase, dataSource, proposalSource, proposalScenario, agentMode, agentRun, noMatch, startedAt, record, live, useAi, errorAt, error, executing],
   );
 
-  const status = currentActivity(phase, live, useAi, record ? effectiveReviewStatus(record) : 'NONE', executing);
+  const status = currentActivity(phase, live, useAi, record ? effectiveReviewStatus(record) : 'NONE', executing, agentMode);
   const exchanges = record?.exchanges ?? pendingExchanges;
 
   return (
@@ -224,26 +309,24 @@ export function PlaygroundPage() {
         eyebrow={
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="accent">Agent Operations</Badge>
-            {live ? <Badge tone="accent">Live backend · {agentMode === 'seeded' ? 'seeded' : 'Luminal proposal (fictional catalog)'}</Badge> : <Badge tone="violet">Demo Mode · simulated agent and engine</Badge>}
+            {!live ? (
+              <Badge tone="violet">Demo Mode · simulated agent and engine</Badge>
+            ) : agentMode ? (
+              <Badge tone="accent">Live backend · AI product discovery</Badge>
+            ) : (
+              <Badge tone="warn">Live backend · seeded demo scenarios</Badge>
+            )}
           </div>
         }
         title="Watch an agent ask for permission"
         description="Give PurchasePilot a task. Follow every step from proposal to evaluation to (optional) execution, and inspect the exact requests and responses."
         actions={
           live && (
-            <div className="flex flex-wrap items-center gap-3">
-            <label className="text-xs text-muted">Agent mode
-              <select aria-label="Agent mode" className="input ml-2 w-auto" value={agentMode} onChange={(e) => setAgentMode(e.target.value as 'live-ai' | 'seeded')} disabled={running}>
-                <option value="live-ai">Real Luminal (fictional catalog)</option>
-                <option value="seeded">Seeded security scenario</option>
-              </select>
-            </label>
             <label className="flex items-center gap-2 rounded-full border border-line px-3 py-1 text-xs text-muted">
               <Sparkles className="h-3.5 w-3.5 text-accent-soft" aria-hidden />
               AI analysis
               <Toggle size="sm" checked={useAi} onChange={setUseAi} label="Request AI analysis" disabled={running} />
             </label>
-            </div>
           )
         }
       />
@@ -261,8 +344,21 @@ export function PlaygroundPage() {
       )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.05fr)]">
-        <Panel title="AI agent" subtitle={live ? (agentMode === 'seeded' ? 'Backend agent (seeded scenarios)' : 'Luminal AI · fictional demo catalog') : 'Rule-based demo planner'} icon={<Bot className="h-3.5 w-3.5" />}>
-          <AgentPanel goal={goal} onGoalChange={setGoal} onRun={onRun} onStop={onStop} running={running} activity={activity} proposal={proposal} live={live} scenario={liveScenario} onScenarioChange={setLiveScenario} seededMode={agentMode === 'seeded'} />
+        <Panel title="AI agent" subtitle={!live ? 'Rule-based demo planner' : agentMode ? 'Backend agent · live product discovery' : 'Backend agent (seeded scenarios)'} icon={<Bot className="h-3.5 w-3.5" />}>
+          <AgentPanel
+            goal={goal}
+            onGoalChange={setGoal}
+            onRun={onRun}
+            onStop={onStop}
+            running={running}
+            activity={activity}
+            proposal={proposal}
+            live={live}
+            scenario={liveScenario}
+            onScenarioChange={setLiveScenario}
+            liveMode={liveMode}
+            onLiveModeChange={setLiveMode}
+          />
         </Panel>
 
         <Panel
@@ -295,6 +391,23 @@ export function PlaygroundPage() {
           />
         </Panel>
       </div>
+
+      {(agentRun || noMatch) && (
+        <Panel
+          className="mt-4"
+          title="Product recommendations"
+          subtitle={agentRun ? 'Only products returned by the search for this request; sources and verification shown per product' : 'Demo planner'}
+          icon={<PackageSearch className="h-3.5 w-3.5 text-accent-soft" />}
+        >
+          {agentRun ? (
+            <DiscoveryPanel summary={agentRun} record={phase === 'done' ? record ?? null : null} />
+          ) : (
+            <p className="rounded-lg border border-warn/30 bg-warn/[0.05] p-3 text-sm text-muted" role="status">
+              {noMatch}
+            </p>
+          )}
+        </Panel>
+      )}
 
       <section className="card mt-4">
         <button onClick={() => setJsonOpen((o) => !o)} aria-expanded={jsonOpen} className="flex w-full items-center gap-2.5 px-4 py-3 text-left">
@@ -332,14 +445,13 @@ export function PlaygroundPage() {
                       setStartedAt(r.response.created_at);
                       setError(null);
                       setErrorAt(null);
-                      setProposalSource(r.source === 'api' ? 'luminal-agent' : 'demo-planner');
-                      setProposal({ activity: [], request: r.request, reasoning: r.request.context?.agent_reasoning ?? '', path: 'budget' });
+                      restore(r);
                       setActivity([]);
                     }}
                     className={active ? 'flex items-center gap-2 rounded-lg border border-accent/50 bg-accent/[0.06] px-2.5 py-1.5 text-left' : 'flex items-center gap-2 rounded-lg border border-line px-2.5 py-1.5 text-left hover:border-line-strong'}
                   >
                     <DecisionBadge decision={r.response.decision} />
-                    <span className="text-xs text-ink">{(r.request.action.parameters.product_name as string) ?? r.request.action.type}</span>
+                    <span className="text-xs text-ink">{(r.request.action.parameters.product_name as string) ?? r.agent_run?.recommendation?.product.title ?? r.request.action.type}</span>
                     {r.request.action.parameters.price !== undefined && <span className="font-mono text-2xs text-faint">{formatCurrency(r.request.action.parameters.price)}</span>}
                     <span className="font-mono text-2xs text-faint">{formatTime(r.response.created_at)}</span>
                   </button>
@@ -357,11 +469,18 @@ export function PlaygroundPage() {
   );
 }
 
-function currentActivity(phase: RunPhase, live: boolean, useAi: boolean, review: string, executing: boolean): { label: string; detail?: string; tone: string; busy?: boolean } {
+function currentActivity(phase: RunPhase, live: boolean, useAi: boolean, review: string, executing: boolean, agentMode: boolean): { label: string; detail?: string; tone: string; busy?: boolean } {
   const accent = 'border-accent/30 bg-accent/[0.06] text-accent-soft';
   if (executing) return { label: 'Authorizing a simulated action', detail: live ? 'POST /api/v1/actions/execute — the backend gateway decides.' : 'Simulated gateway re-checks the decision.', tone: accent, busy: true };
   switch (phase) {
     case 'proposing':
+      if (agentMode)
+        return {
+          label: useAi ? 'Searching products, ranking, evaluating · calling Luminal for AI analysis' : 'Searching products, ranking and evaluating',
+          detail: 'POST /api/v1/agent/run. Nothing is executed.',
+          tone: accent,
+          busy: true,
+        };
       return { label: live ? 'Using a seeded agent proposal' : 'Demo planner choosing an action', detail: live ? 'POST /api/v1/agent/propose' : 'Deterministic rules, not an LLM.', tone: accent, busy: true };
     case 'evaluating':
       return {
@@ -373,6 +492,8 @@ function currentActivity(phase: RunPhase, live: boolean, useAi: boolean, review:
     case 'done':
       if (review === 'PENDING') return { label: 'Awaiting human review', detail: 'Execution stays blocked until a reviewer decides.', tone: 'border-warn/30 bg-warn/[0.06] text-warn' };
       return { label: 'Decision returned', detail: 'Execution happens only if you choose to proceed.', tone: 'border-line bg-raised/50 text-ink' };
+    case 'no_match':
+      return { label: 'No matching products', detail: 'Nothing was proposed or evaluated. No other category was substituted.', tone: 'border-warn/30 bg-warn/[0.06] text-warn' };
     case 'error':
       return { label: 'Run failed', detail: 'See the error below. No result was substituted.', tone: 'border-danger/30 bg-danger/[0.06] text-danger' };
     default:
