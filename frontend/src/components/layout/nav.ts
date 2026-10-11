@@ -1,4 +1,4 @@
-import { LayoutDashboard, Bot, Activity, Swords, ScrollText, FileClock, Network, FlaskConical, Globe, ShieldCheck, SlidersHorizontal, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, Bot, Activity, Swords, ScrollText, FileClock, Network, FlaskConical, Globe, ShieldCheck, Inbox, KeyRound, SlidersHorizontal, type LucideIcon } from 'lucide-react';
 
 export interface NavItem {
   to: string;
@@ -8,9 +8,13 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Trust Gate', icon: ShieldCheck, description: 'Authorize any agent action' },
-  { to: '/rules', label: 'Your Rules', icon: SlidersHorizontal, description: 'Set the rules your agents must follow' },
-  { to: '/overview', label: 'Overview', icon: LayoutDashboard, description: 'Command center' },
+  { to: '/', label: 'Home', icon: LayoutDashboard, description: 'AI agents propose. TrustLayer decides.' },
+  { to: '/workspace', label: 'Agent Workspace', icon: Bot, description: 'Give an agent any task' },
+  { to: '/reviews', label: 'Review Queue', icon: Inbox, description: 'Approve or reject held actions' },
+  { to: '/agents', label: 'Agents & API', icon: KeyRound, description: 'Keys, permissions and limits' },
+  { to: '/trust-gate', label: 'Scenario Tester', icon: ShieldCheck, description: 'Edit a proposal and test the gate' },
+  { to: '/overview', label: 'Shopping Overview', icon: LayoutDashboard, description: 'Original purchasing demo' },
+  { to: '/rules', label: 'Your Rules', icon: SlidersHorizontal, description: 'Rules for your purchasing agent' },
   { to: '/playground', label: 'Agent Playground', icon: Bot, description: 'Run an agent end to end' },
   { to: '/research', label: 'Web Research', icon: Globe, description: 'Search the web for any topic' },
   { to: '/decisions', label: 'Live Decisions', icon: Activity, description: 'Every evaluated action' },

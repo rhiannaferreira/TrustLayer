@@ -18,6 +18,14 @@ export const ENDPOINTS = {
   aiStatus: `${API_PREFIX}/ai/status`,
   research: `${API_PREFIX}/research`,
   trustScenarios: `${API_PREFIX}/trust/scenarios`,
+  tasks: `${API_PREFIX}/tasks`,
+  trustDecisions: `${API_PREFIX}/trust/decisions`,
+  trustReview: (id: string) => `${API_PREFIX}/trust/decisions/${encodeURIComponent(id)}/review`,
+  trustStats: `${API_PREFIX}/trust/stats`,
+  trustTools: `${API_PREFIX}/trust/tools`,
+  agents: `${API_PREFIX}/agents`,
+  agent: (id: string) => `${API_PREFIX}/agents/${encodeURIComponent(id)}`,
+  agentKey: (id: string) => `${API_PREFIX}/agents/${encodeURIComponent(id)}/key`,
   trustEvaluate: `${API_PREFIX}/trust/evaluate`,
 } as const;
 

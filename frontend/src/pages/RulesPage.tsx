@@ -124,7 +124,7 @@ export function RulesPage() {
           >
             <p className="text-xs text-muted">
               Sandbox <span className="font-mono text-ink">{workspace.slice(0, 15)}…</span> · These rules apply to the purchasing agent in the Agent Playground, Attack Lab and Test Console.
-              The Trust Gate, Agent Workspace and Agents pages use per-agent settings that all visitors share.
+              The Agent Workspace, Agents & API and Scenario Tester pages use per-agent settings that all visitors share.
             </p>
           </Panel>
 
