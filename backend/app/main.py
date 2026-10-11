@@ -20,6 +20,7 @@ from .discovery import discover
 from .providers import ProviderUnavailable, search_config
 from .web_search import WebSearchUnavailable, research, web_search_status
 from .ranking import RankingRejected
+from .trust import AGENTS, SCENARIOS, TrustRequest, evaluate_trust
 from pydantic import BaseModel, Field
 load_dotenv()
 
@@ -279,3 +280,33 @@ def audit_events(limit: int = Query(200, ge=1, le=500)):
 def ai_status():
     return {"provider": "luminal", "configured": configured(),
             "mode": "optional_advisory_only", "model": os.getenv("LUMINAL_MODEL") if configured() else None}
+
+
+@app.get("/api/v1/trust/agents")
+def trust_agents():
+    return [{"id": k, **{f: v[f] for f in ("name", "domain", "scopes", "limits")}} for k, v in AGENTS.items()]
+
+
+@app.get("/api/v1/trust/scenarios")
+def trust_scenarios():
+    return SCENARIOS
+
+
+@app.post("/api/v1/trust/evaluate")
+async def trust_evaluate(request: TrustRequest):
+    """General-purpose gate: any agent proposes any registered action; TrustLayer decides. Never executes."""
+    ai_analysis = ai_error = None
+    if request.use_ai:
+        try:
+            ai_analysis = await investigate(request.goal, {"action": request.action, "parameters": request.parameters},
+                                            [e.model_dump() for e in request.evidence])
+        except Exception as ex:
+            ai_error = f"AI analysis unavailable ({type(ex).__name__})"
+    result = evaluate_trust(request, ai_analysis, ai_error)
+    db.add_audit("TRUST_DECISION", result["evaluation_id"], result)
+    return result
+
+
+@app.get("/api/v1/trust/decisions")
+def trust_decisions(limit: int = Query(50, ge=1, le=200)):
+    return [e["details"] for e in db.list_audit(500) if e["event_type"] == "TRUST_DECISION"][:limit]
