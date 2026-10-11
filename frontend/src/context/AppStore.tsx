@@ -202,6 +202,7 @@ export interface AppStoreValue {
   patchLivePolicy: (id: string, patch: Record<string, unknown>) => Promise<void>;
   loadCatalog: () => Promise<Product[]>;
   proposeLive: (intent: string, scenario: string, trace: Trace) => Promise<LiveProposal>;
+  proposeAiLive: (intent: string, trace: Trace) => Promise<LiveProposal>;
   setSettings: (settings: Partial<Settings>) => void;
   resetDemo: () => void;
 }
@@ -295,7 +296,7 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
         });
       }
       dispatch({ type: 'ADD_RECORD', record });
-      const auto = input.autoExecute ?? stateRef.current.settings.autoExecute;
+      const auto = source === 'mock' && (input.autoExecute ?? stateRef.current.settings.autoExecute);
       if (auto && record.response.decision === 'ALLOW') {
         await executeRecord(record.id);
         return stateRef.current.records.find((r) => r.id === record.id) ?? record;
@@ -442,6 +443,11 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     [http],
   );
 
+  const proposeAiLive = useCallback(
+    (intent: string, trace: Trace) => http.proposeAi({ agent_id: 'purchase-pilot', intent, policy_id: POLICY_SET_ID }, trace),
+    [http],
+  );
+
   const refreshFromBackend = useCallback(async (): Promise<number> => {
     if (stateRef.current.settings.dataSource !== 'api') return 0;
     const items = await http.listEvaluations();
@@ -494,6 +500,7 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     patchLivePolicy,
     loadCatalog,
     proposeLive,
+    proposeAiLive,
     setSettings,
     resetDemo,
   };

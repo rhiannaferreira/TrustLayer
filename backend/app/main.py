@@ -39,8 +39,11 @@ def health():
 
 
 @app.get("/api/v1/catalog")
-def catalog():
-    return list(PRODUCTS.values())
+def catalog(category: str | None = None, max_price: float | None = Query(None, ge=0)):
+    """Browse fictional test catalog. Real retail listings are not supplied."""
+    return [p for p in PRODUCTS.values()
+            if (category is None or p.get("category") == category)
+            and (max_price is None or p["price"] <= max_price)]
 
 
 @app.post("/api/v1/agent/propose")

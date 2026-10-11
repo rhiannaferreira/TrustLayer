@@ -4,6 +4,7 @@ import math
 import re
 from uuid import uuid4
 from .catalog import PRODUCTS, alternatives
+from .discovery import category_from_intent, budget_from_intent, matches_request
 from .quality import assess_quality
 from .db import utc_now
 
@@ -35,8 +36,15 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
     product_id = parameters.get("product_id")
     if action.type == "place_order":
         product = PRODUCTS.get(product_id)
+        requested_category = category_from_intent(request.intent)
+        requested_budget, budget_is_strict = budget_from_intent(request.intent)
+        if requested_category is not None or requested_budget is not None:
+            aligned = bool(product and matches_request(request.intent, product))
+            check("Request alignment", "PASS" if aligned else "FAIL",
+                  "Product matches requested category and price" if aligned
+                  else "Product does not match the requested category, features, or price ceiling")
         if not product:
-            check("Trusted product reference", "WARN", "Product not in verified local demo catalog")
+            check("Trusted product reference", "FAIL", "Unknown product: cannot authorize unverified item")
         else:
             given_price, given_vendor = parameters.get("price"), parameters.get("vendor")
             price_matches = type(given_price) in (int, float) and math.isfinite(given_price) and abs(float(given_price)-product["price"]) < 0.001
@@ -93,7 +101,10 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
     risk = "HIGH" if failed else "MEDIUM" if warning else "LOW"
     reason = next((c["reason"] for c in checks if c["status"] == "FAIL"), None) or \
              next((c["reason"] for c in checks if c["status"] == "WARN"), "All active checks passed")
-    recommended = alternatives(max_amount, allowed_vendors, product_id) if action.type == "place_order" else []
+    recommended = alternatives(max_amount, allowed_vendors, product_id,
+                               category=category_from_intent(request.intent),
+                               user_budget=budget_from_intent(request.intent)[0],
+                               strict_budget=budget_from_intent(request.intent)[1]) if action.type == "place_order" and category_from_intent(request.intent) else []
     return {
         "evaluation_id": f"eval-{uuid4().hex[:12]}",
         "agent_id": request.agent_id,

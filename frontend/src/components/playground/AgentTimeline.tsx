@@ -23,7 +23,7 @@ export interface TimelineStep {
 interface Input {
   phase: RunPhase;
   source: DataSource;
-  proposalSource: 'backend-seeded' | 'demo-planner' | null;
+  proposalSource: 'backend-seeded' | 'luminal-agent' | 'demo-planner' | null;
   proposalScenario?: string;
   startedAt: string | null;
   record: EvaluationRecord | null;
@@ -43,14 +43,14 @@ export function buildAgentTimeline(i: Input): TimelineStep[] {
   steps.push({ id: 'task', title: 'Task received', state: i.startedAt ? 'done' : 'pending', source: i.startedAt ? 'local' : null, at: i.startedAt ?? undefined });
 
   let proposal: TimelineStep = { id: 'proposal', title: 'Proposal produced', state: 'pending', source: null };
-  if (i.phase === 'proposing') proposal = { ...proposal, state: 'active', detail: live ? 'Requesting a proposal from POST /api/v1/agent/propose (seeded demo scenarios)…' : 'Deterministic demo planner is choosing an action…' };
+  if (i.phase === 'proposing') proposal = { ...proposal, state: 'active', detail: live ? 'Requesting a backend agent proposal (Luminal AI or seeded mode)…' : 'Deterministic demo planner is choosing an action…' };
   else if (i.errorAt === 'proposal') proposal = { ...proposal, state: 'failed', source: live ? 'backend' : 'demo', detail: i.errorMessage };
   else if (i.proposalSource)
     proposal = {
       ...proposal,
       state: 'done',
-      source: i.proposalSource === 'backend-seeded' ? 'backend' : 'demo',
-      detail: i.proposalSource === 'backend-seeded' ? `Seeded agent proposal from the backend${i.proposalScenario ? ` (scenario: ${i.proposalScenario})` : ''} — not free-form LLM planning.` : 'Rule-based demo planner (not an LLM).',
+      source: i.proposalSource !== 'demo-planner' ? 'backend' : 'demo',
+      detail: i.proposalSource === 'luminal-agent' ? 'Luminal generated a proposal from matching fictional demo catalog products.' : i.proposalSource === 'backend-seeded' ? `Seeded agent proposal from the backend${i.proposalScenario ? ` (scenario: ${i.proposalScenario})` : ''} — not free-form LLM planning.` : 'Rule-based demo planner (not an LLM).',
     };
   steps.push(proposal);
 

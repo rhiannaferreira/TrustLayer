@@ -230,7 +230,7 @@ export interface AgentProfile {
 export interface Product {
   id: string;
   name: string;
-  category: 'headphones';
+  category: string;
   price: number;
   vendor: string;
   rating: number;

@@ -454,7 +454,7 @@ export function normalizeCatalog(raw: unknown): Product[] | null {
       {
         id,
         name: str(pick(p, ['name', 'product_name', 'title'])) ?? id,
-        category: 'headphones',
+        category: str(pick(p, ['category'])) ?? 'unknown',
         price: num(pick(p, ['price', 'amount'])) ?? NaN,
         vendor: str(pick(p, ['vendor', 'merchant', 'seller'])) ?? '',
         rating: num(p.rating) ?? NaN,
@@ -499,7 +499,7 @@ export function normalizeProposal(raw: unknown, intent: string, agentId: string,
     reasoning: str(pick(v, ['reasoning', 'agent_reasoning', 'rationale', 'explanation'])) ?? '',
     scenario,
     // The team confirmed the propose endpoint uses seeded scenarios; respect an explicit false.
-    seeded: typeof seededFlag === 'boolean' ? seededFlag : true,
+    seeded: typeof seededFlag === 'boolean' ? seededFlag : v.proposal_source === 'luminal_generated' ? false : true,
     notes,
     raw,
   };

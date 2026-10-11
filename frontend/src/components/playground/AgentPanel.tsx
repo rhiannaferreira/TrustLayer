@@ -18,9 +18,10 @@ interface AgentPanelProps {
   live?: boolean;
   scenario?: string;
   onScenarioChange?: (scenario: string) => void;
+  seededMode?: boolean;
 }
 
-export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live, scenario, onScenarioChange }: AgentPanelProps) {
+export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live, scenario, onScenarioChange, seededMode }: AgentPanelProps) {
   const params = proposal?.request.action.parameters;
   return (
     <div className="space-y-4">
@@ -105,7 +106,7 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             </ol>
           )}
         </div>
-        {live && onScenarioChange && (
+        {live && seededMode && onScenarioChange && (
           <label className="mt-2 block text-xs text-muted">
             Seeded backend scenario
             <select className="input mt-1" value={scenario} onChange={(e) => onScenarioChange(e.target.value)}>
@@ -117,7 +118,7 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
           </label>
         )}
         <p className="mt-1.5 text-2xs text-faint">
-          {live ? 'Backend agent: POST /api/v1/agent/propose returns seeded demo scenarios. It is not free-form LLM planning.' : 'Demo agent: deterministic rule-based planner, not an LLM.'}
+          {live ? (seededMode ? 'Seeded scenario from the backend. No LLM proposal generated.' : 'Luminal ranks category- and budget-matched fictional demo catalog items; no real retailer search.') : 'Demo agent: deterministic rule-based planner, not an LLM.'}
         </p>
       </div>
 

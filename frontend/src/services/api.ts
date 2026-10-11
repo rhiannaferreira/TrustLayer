@@ -163,6 +163,12 @@ export function createHttpClient(baseUrl: string) {
       return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentPropose, trace);
     },
 
+    /** Live model-selected proposal from category/budget-filtered fictional catalog. */
+    async proposeAi(input: { agent_id: string; intent: string; policy_id: string }, trace?: Trace): Promise<LiveProposal> {
+      const body = await request(ENDPOINTS.agentProposeAi, { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent } }, trace, EVALUATION_TIMEOUT_MS);
+      return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentProposeAi, trace);
+    },
+
     async evaluate(payload: EvaluationRequest, trace?: Trace): Promise<NormalizedEvaluation & { raw: unknown }> {
       const body = await request(ENDPOINTS.evaluations, { method: 'POST', body: toWireRequest(payload) }, trace, EVALUATION_TIMEOUT_MS);
       return { ...wrapContract(() => normalizeEvaluation(body, payload), ENDPOINTS.evaluations, trace), raw: body };

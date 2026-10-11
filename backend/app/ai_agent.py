@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from .catalog import PRODUCTS
+from .discovery import category_from_intent, budget_from_intent, search_demo_products
 from .luminal import configured
 
 
@@ -33,7 +34,14 @@ def parse_model_choice(text: str) -> dict[str, Any]:
 async def generate_proposal(request: AIProposeRequest) -> dict[str, Any]:
     if not configured():
         raise HTTPException(status_code=503, detail="Luminal is not configured")
-    catalog = list(PRODUCTS.values())
+    catalog = search_demo_products(request.intent, PRODUCTS)
+    if not catalog:
+        category = category_from_intent(request.intent)
+        budget, _ = budget_from_intent(request.intent)
+        description = category or "supported category"
+        cap = f" under ${budget:g}" if budget is not None else ""
+        raise HTTPException(status_code=404, detail=f"No matching fictional demo {description} products{cap}. No live retailer provider is connected.")
+    allowed_ids = {p["product_id"] for p in catalog}
     system = (
         "You are PurchasePilot, a product selection agent. Choose one product ONLY from "
         "the provided catalog that best matches the user's task. A request can include "
@@ -68,8 +76,8 @@ async def generate_proposal(request: AIProposeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Luminal proposal failed or had invalid output") from exc
 
     selected_id = selection.get("product_id")
-    if not isinstance(selected_id, str) or selected_id not in PRODUCTS:
-        raise HTTPException(status_code=502, detail="Luminal selected an unknown product")
+    if not isinstance(selected_id, str) or selected_id not in allowed_ids:
+        raise HTTPException(status_code=502, detail="Luminal selected a product outside the requested category or budget")
     product = PRODUCTS[selected_id]  # Authoritative price/vendor; never trust model's values.
     reason = selection.get("reason")
     if not isinstance(reason, str) or not reason.strip():
@@ -86,5 +94,6 @@ async def generate_proposal(request: AIProposeRequest) -> dict[str, Any]:
                       "content": f"{product['name']}; rating {product['rating']}; listed price ${product['price']}"}],
         "policy_id": "shopping-default",
         "proposal_source": "luminal_generated",
+        "catalog_source": "fictional_demo_catalog",
         "agent_reasoning": reason.strip()[:1000],
     }

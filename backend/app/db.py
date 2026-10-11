@@ -10,7 +10,7 @@ from uuid import uuid4
 
 DEFAULT_POLICIES = [
     ("spending-limit", "Spending limit", {"max_amount": 80.0}),
-    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio"]}),
+    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio", "StrideCo Demo", "Everyday Market Demo"]}),
     ("allowed-actions", "Allowed tool actions", {"actions": ["place_order", "view_product"]}),
     ("evidence-review", "Review suspicious evidence", {"require_review_for_suspicious": True}),
     ("decision-quality", "Decision evidence quality", {"require_review_if_insufficient": False, "min_independent_sources": 1, "require_comparison_for_best": True, "require_cost_quote": True}),

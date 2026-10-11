@@ -42,16 +42,17 @@ function loadSession(): SessionState {
 
 export function PlaygroundPage() {
   const initial = useRef(loadSession()).current;
-  const { runEvaluation, requestReview, dataSource, getRecord, proposeLive, settings } = useAppStore();
+  const { runEvaluation, requestReview, dataSource, getRecord, proposeLive, proposeAiLive, settings } = useAppStore();
   const { notify } = useToast();
   const navigate = useNavigate();
   const live = dataSource === 'api';
 
   const [goal, setGoal] = useState(initial.goal);
   const [liveScenario, setLiveScenario] = useState('valid');
+  const [agentMode, setAgentMode] = useState<'live-ai' | 'seeded'>('live-ai');
   const [activity, setActivity] = useState<string[]>([]);
   const [proposal, setProposal] = useState<AgentProposal | null>(null);
-  const [proposalSource, setProposalSource] = useState<'backend-seeded' | 'demo-planner' | null>(null);
+  const [proposalSource, setProposalSource] = useState<'backend-seeded' | 'luminal-agent' | 'demo-planner' | null>(null);
   const [proposalScenario, setProposalScenario] = useState<string | undefined>();
   const [recordId, setRecordId] = useState<string | null>(initial.recordId);
   const [runIds, setRunIds] = useState<string[]>(initial.runIds);
@@ -100,7 +101,7 @@ export function PlaygroundPage() {
   };
 
   const execute = useCallback(
-    async (getPlan: () => Promise<{ plan: AgentProposal; source: 'backend-seeded' | 'demo-planner'; scenario?: string; trace: ApiExchange[] }>, retryOf?: string) => {
+    async (getPlan: () => Promise<{ plan: AgentProposal; source: 'backend-seeded' | 'luminal-agent' | 'demo-planner'; scenario?: string; trace: ApiExchange[] }>, retryOf?: string) => {
       const token = ++cancelRef.current;
       setPhase('proposing');
       setStartedAt(new Date().toISOString());
@@ -152,19 +153,19 @@ export function PlaygroundPage() {
       if (!live) return { plan: planFromGoal(goal), source: 'demo-planner' as const, trace: [] };
       const trace: ApiExchange[] = [];
       try {
-        const p = await proposeLive(goal, liveScenario, trace);
+        const p = agentMode === 'seeded' ? await proposeLive(goal, liveScenario, trace) : await proposeAiLive(goal, trace);
         const plan: AgentProposal = {
           path: 'budget',
           reasoning: p.reasoning,
           request: { ...p.request, context: p.reasoning ? { agent_reasoning: p.reasoning } : undefined },
           activity: [
             `Task sent to the backend agent: “${goal}”`,
-            `Backend returned a seeded proposal${p.scenario ? ` (scenario ${p.scenario})` : ''}.`,
+            agentMode === 'seeded' ? `Backend returned a seeded proposal${p.scenario ? ` (scenario ${p.scenario})` : ''}.` : 'Luminal selected a category- and budget-matched demo catalog product.',
             `Proposed ${p.request.action.type}${typeof p.request.action.parameters.price === 'number' ? ` · ${formatCurrency(p.request.action.parameters.price)}` : ''}${p.request.action.parameters.vendor ? ` · ${p.request.action.parameters.vendor}` : ''}.`,
             'Submitting to TrustLayer for authorization.',
           ],
         };
-        return { plan, source: 'backend-seeded' as const, scenario: p.scenario, trace };
+        return { plan, source: agentMode === 'seeded' ? ('backend-seeded' as const) : ('luminal-agent' as const), scenario: p.scenario, trace };
       } catch (err) {
         setPendingExchanges(trace);
         throw err;
@@ -223,18 +224,26 @@ export function PlaygroundPage() {
         eyebrow={
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="accent">Agent Operations</Badge>
-            {live ? <Badge tone="accent">Live backend · seeded agent proposals</Badge> : <Badge tone="violet">Demo Mode · simulated agent and engine</Badge>}
+            {live ? <Badge tone="accent">Live backend · {agentMode === 'seeded' ? 'seeded' : 'Luminal proposal (fictional catalog)'}</Badge> : <Badge tone="violet">Demo Mode · simulated agent and engine</Badge>}
           </div>
         }
         title="Watch an agent ask for permission"
         description="Give PurchasePilot a task. Follow every step from proposal to evaluation to (optional) execution, and inspect the exact requests and responses."
         actions={
           live && (
+            <div className="flex flex-wrap items-center gap-3">
+            <label className="text-xs text-muted">Agent mode
+              <select aria-label="Agent mode" className="input ml-2 w-auto" value={agentMode} onChange={(e) => setAgentMode(e.target.value as 'live-ai' | 'seeded')} disabled={running}>
+                <option value="live-ai">Real Luminal (fictional catalog)</option>
+                <option value="seeded">Seeded security scenario</option>
+              </select>
+            </label>
             <label className="flex items-center gap-2 rounded-full border border-line px-3 py-1 text-xs text-muted">
               <Sparkles className="h-3.5 w-3.5 text-accent-soft" aria-hidden />
               AI analysis
               <Toggle size="sm" checked={useAi} onChange={setUseAi} label="Request AI analysis" disabled={running} />
             </label>
+            </div>
           )
         }
       />
@@ -252,8 +261,8 @@ export function PlaygroundPage() {
       )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.05fr)]">
-        <Panel title="AI agent" subtitle={live ? 'Backend agent (seeded scenarios)' : 'Rule-based demo planner'} icon={<Bot className="h-3.5 w-3.5" />}>
-          <AgentPanel goal={goal} onGoalChange={setGoal} onRun={onRun} onStop={onStop} running={running} activity={activity} proposal={proposal} live={live} scenario={liveScenario} onScenarioChange={setLiveScenario} />
+        <Panel title="AI agent" subtitle={live ? (agentMode === 'seeded' ? 'Backend agent (seeded scenarios)' : 'Luminal AI · fictional demo catalog') : 'Rule-based demo planner'} icon={<Bot className="h-3.5 w-3.5" />}>
+          <AgentPanel goal={goal} onGoalChange={setGoal} onRun={onRun} onStop={onStop} running={running} activity={activity} proposal={proposal} live={live} scenario={liveScenario} onScenarioChange={setLiveScenario} seededMode={agentMode === 'seeded'} />
         </Panel>
 
         <Panel
@@ -323,7 +332,7 @@ export function PlaygroundPage() {
                       setStartedAt(r.response.created_at);
                       setError(null);
                       setErrorAt(null);
-                      setProposalSource(r.source === 'api' ? 'backend-seeded' : 'demo-planner');
+                      setProposalSource(r.source === 'api' ? 'luminal-agent' : 'demo-planner');
                       setProposal({ activity: [], request: r.request, reasoning: r.request.context?.agent_reasoning ?? '', path: 'budget' });
                       setActivity([]);
                     }}
