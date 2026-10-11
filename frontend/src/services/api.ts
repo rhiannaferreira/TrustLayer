@@ -139,6 +139,8 @@ export function createHttpClient(baseUrl: string) {
     async health(): Promise<HealthStatus> {
       const started = performance.now();
       const body = await request(ENDPOINTS.health, { method: 'GET' }, undefined, 4_000);
+      // Static hosts (Vercel's SPA rewrite) answer /health with index.html and a 200; that is not a backend.
+      if (!isObj(body)) throw new ApiError('Expected a JSON health response', ENDPOINTS.health, undefined, body);
       return { ok: true, latency_ms: Math.round(performance.now() - started), body };
     },
 

@@ -160,7 +160,7 @@ export function DecisionsPage() {
             />
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-[860px] text-left text-sm">
               <thead>
                 <tr className="border-b border-line text-2xs uppercase tracking-wider text-faint">

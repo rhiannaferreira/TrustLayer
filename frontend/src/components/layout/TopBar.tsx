@@ -51,7 +51,8 @@ export function TopBar({ onMenu, onSettings }: { onMenu: () => void; onSettings:
         <button onClick={toggle} className="rounded-md p-1.5 text-muted hover:bg-overlay hover:text-ink" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
           {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
-        <button onClick={onSettings} className="rounded-md p-1.5 text-muted hover:bg-overlay hover:text-ink" aria-label="Connection settings">
+        {/* Hidden on phones to fit the bar; the mode pill above opens the same settings. */}
+        <button onClick={onSettings} className="hidden rounded-md p-1.5 text-muted hover:bg-overlay hover:text-ink sm:block" aria-label="Connection settings">
           <Settings2 className="h-4 w-4" />
         </button>
       </div>

@@ -61,7 +61,10 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
               key={p.id}
               type="button"
               disabled={running}
-              onClick={() => onGoalChange(p.goal)}
+              onClick={() => {
+                onGoalChange(p.goal);
+                if (live) onScenarioChange?.(p.liveScenario);
+              }}
               title={p.hint}
               className={cn(
                 'rounded-full border px-2.5 py-1 text-2xs transition-colors disabled:opacity-50',
