@@ -121,3 +121,4 @@ Create a separate Vercel project from this repo with branch `feature/backend` an
 - Set `LUMINAL_API_KEY`, `LUMINAL_API_BASE_URL`, `LUMINAL_MODEL` (and optionally `PRODUCT_SEARCH_PROVIDER`, `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`) as project environment variables. They stay on the backend only.
 - `CORS_ORIGINS` already defaults to localhost plus `https://trust-layer-henna.vercel.app`. Override it (comma separated) to allow other frontends.
 - On Vercel the SQLite database lives in `/tmp/trustlayer.sqlite3` (override with `TRUSTLAYER_DB_PATH`). Serverless storage is ephemeral, so evaluations, audit history and policy edits reset on cold starts. This is fine for a demo, not for production.
+- After deploying, `GET /health` should report `"mode": "vercel"`.
