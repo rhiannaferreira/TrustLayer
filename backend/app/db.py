@@ -10,7 +10,7 @@ from uuid import uuid4
 
 DEFAULT_POLICIES = [
     ("spending-limit", "Spending limit", {"max_amount": 80.0}),
-    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio"]}),
+    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio", "StrideCo Demo", "Everyday Market Demo"]}),
     ("allowed-actions", "Allowed tool actions", {"actions": ["place_order", "view_product"]}),
     ("evidence-review", "Review suspicious evidence", {"require_review_for_suspicious": True}),
     ("decision-quality", "Decision evidence quality", {"require_review_if_insufficient": False, "min_independent_sources": 1, "require_comparison_for_best": True, "require_cost_quote": True}),
@@ -59,6 +59,10 @@ def init_db():
             id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL UNIQUE,
             action_json TEXT NOT NULL, created_at TEXT NOT NULL,
             FOREIGN KEY(evaluation_id) REFERENCES evaluations(id)
+          );
+          CREATE TABLE IF NOT EXISTS live_products (
+            product_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+            data_json TEXT NOT NULL, retrieved_at TEXT NOT NULL
           );
           CREATE TABLE IF NOT EXISTS audit_events (
             id TEXT PRIMARY KEY, evaluation_id TEXT, event_type TEXT NOT NULL,
@@ -131,3 +135,26 @@ def list_audit(limit=200):
         rows = c.execute("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{"id": r["id"], "evaluation_id": r["evaluation_id"], "event_type": r["event_type"],
              "details": json.loads(r["details_json"]), "created_at": r["created_at"]} for r in rows]
+
+
+def save_live_products(products):
+    """Store verified provider response snapshots; never accept these from the frontend."""
+    with connect() as c:
+        for product in products:
+            provider = product.get("provider")
+            if provider not in {"ebay", "serper"} or not isinstance(product.get("product_id"), str) or not product["product_id"].startswith(provider + ":"):
+                raise ValueError("Only verified live retailer search snapshots are supported")
+            c.execute("INSERT OR REPLACE INTO live_products VALUES (?, ?, ?, ?)",
+                      (product["product_id"], provider, json.dumps(product), utc_now()))
+
+
+def get_live_product(product_id, max_age_seconds=900):
+    """Return recently retrieved server-side listing data or None if stale/unverified."""
+    from datetime import timedelta
+    with connect() as c:
+        row = c.execute("SELECT * FROM live_products WHERE product_id=?", (product_id,)).fetchone()
+    if not row or row["provider"] not in {"ebay", "serper"} or not product_id.startswith(row["provider"] + ":"):
+        return None
+    if datetime.fromisoformat(row["retrieved_at"]) < datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds):
+        return None
+    return json.loads(row["data_json"])

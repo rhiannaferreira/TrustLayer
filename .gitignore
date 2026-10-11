@@ -2,3 +2,7 @@ node_modules
 .DS_Store
 .env
 .env.local
+
+/backend/.env.save
+/.trustlayer_retail_backup/
+/.trustlayer_serper_backup/

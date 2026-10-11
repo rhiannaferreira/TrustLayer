@@ -7,6 +7,7 @@ from app.main import app
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRODUCT_SEARCH_PROVIDER", "demo")
     monkeypatch.setenv("TRUSTLAYER_DB_PATH", str(tmp_path / "run-test.sqlite3"))
     monkeypatch.setenv("LUMINAL_API_KEY", "test-secret-not-real")
     monkeypatch.setenv("LUMINAL_API_BASE_URL", "https://example.invalid/v1")
