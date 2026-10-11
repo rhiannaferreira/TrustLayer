@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { X } from 'lucide-react';
 import { RefreshCw, Activity, Inbox, Radio } from 'lucide-react';
 import { useAppStore } from '@/context/AppStore';
 import { useToast } from '@/context/ToastContext';
@@ -17,13 +19,25 @@ import { decisionCounts, filterRecords, type DecisionFilter } from '@/lib/filter
 import { actionTarget, effectiveReviewStatus } from '@/lib/records';
 import { actionLabel } from '@/data/agents';
 import { formatDateTime, formatTime, formatCurrency } from '@/lib/format';
+import { RISK_LEVELS, type RiskLevel } from '@/types';
 
 const POLL_MS = 5000;
 
 export function DecisionsPage() {
   const { records, dataSource, refreshFromBackend } = useAppStore();
   const { notify } = useToast();
-  const [filter, setFilter] = useState<DecisionFilter>('ALL');
+  const [params, setParams] = useSearchParams();
+  const decisionParam = params.get('decision');
+  const filter: DecisionFilter = decisionParam === 'ALLOW' || decisionParam === 'BLOCK' || decisionParam === 'REVIEW_REQUIRED' ? decisionParam : 'ALL';
+  const riskFilter = (params.get('risk') ?? '').split(',').filter((r): r is RiskLevel => (RISK_LEVELS as string[]).includes(r));
+  const checkFilter = params.get('check') ?? undefined;
+  const setParam = (key: string, value: string | null) => {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next, { replace: true });
+  };
+  const setFilter = (d: DecisionFilter) => setParam('decision', d === 'ALL' ? null : d);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,7 +46,7 @@ export function DecisionsPage() {
   const [lastSync, setLastSync] = useState<string | null>(null);
 
   const counts = decisionCounts(records);
-  const visible = filterRecords(records, filter, query);
+  const visible = filterRecords(records, filter, query, { risk: riskFilter, failedCheck: checkFilter });
 
   const refresh = async (silent = false) => {
     if (dataSource === 'mock') {
@@ -57,12 +71,18 @@ export function DecisionsPage() {
 
   useInterval(() => void refresh(true), polling && dataSource === 'api' ? POLL_MS : null);
 
+  // Live Backend Mode: load database-backed history on arrival.
+  useEffect(() => {
+    if (dataSource === 'api') void refresh(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataSource]);
+
   return (
     <>
       <PageHeader
         eyebrow={<Badge tone="accent">Live Decisions</Badge>}
         title="Every agent action, evaluated"
-        description="A monitoring console of each action TrustLayer evaluated in this session. Select a row to inspect checks, evidence and timeline."
+        description={dataSource === 'api' ? 'Database-backed decision history from the backend, plus evaluations run in this browser. Select a row for the full inspector.' : 'A monitoring console of each action TrustLayer evaluated in this demo session. Select a row for the full inspector.'}
         actions={
           <>
             {dataSource === 'api' && (
@@ -108,6 +128,21 @@ export function DecisionsPage() {
           />
           <SearchInput value={query} onChange={setQuery} placeholder="Search ID, agent, action, vendor…" label="Search decisions" />
         </div>
+        {(riskFilter.length > 0 || checkFilter) && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2 text-xs">
+            <span className="text-faint">Filtered from dashboard:</span>
+            {riskFilter.length > 0 && (
+              <button onClick={() => setParam('risk', null)} className="inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-accent-soft">
+                Risk: {riskFilter.join(', ')} <X className="h-3 w-3" aria-label="Clear risk filter" />
+              </button>
+            )}
+            {checkFilter && (
+              <button onClick={() => setParam('check', null)} className="inline-flex items-center gap-1 rounded-md border border-danger/30 bg-danger/10 px-2 py-0.5 text-danger">
+                Failed check: {checkFilter} <X className="h-3 w-3" aria-label="Clear check filter" />
+              </button>
+            )}
+          </div>
+        )}
 
         {visible.length === 0 ? (
           <div className="p-4">
@@ -117,7 +152,7 @@ export function DecisionsPage() {
               description={records.length ? 'Try clearing the search or choosing a different filter.' : dataSource === 'api' ? 'Run an evaluation or press Refresh to load history from the backend.' : 'Run the Agent Playground or Attack Lab.'}
               action={
                 records.length > 0 ? (
-                  <Button size="sm" variant="ghost" onClick={() => { setFilter('ALL'); setQuery(''); }}>
+                  <Button size="sm" variant="ghost" onClick={() => { setParams({}, { replace: true }); setQuery(''); }}>
                     Clear filters
                   </Button>
                 ) : undefined

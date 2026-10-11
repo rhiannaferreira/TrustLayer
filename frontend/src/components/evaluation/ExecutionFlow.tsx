@@ -23,14 +23,14 @@ export function ExecutionFlow({ record, compact }: { record: EvaluationRecord; c
       icon: AuthIcon,
       tone: authTone,
       body: response.decision === 'ALLOW' ? 'Granted' : response.decision === 'BLOCK' ? 'Denied' : record.review.status === 'APPROVED' ? 'Granted after review' : 'Held for review',
-      sub: verdict.allowed ? 'Gateway will accept' : 'Gateway will refuse',
+      sub: record.source === 'api' ? `execution_allowed: ${response.execution_allowed}` : verdict.allowed ? 'Gateway will accept' : 'Gateway will refuse',
     },
     {
       title: 'Execution',
       icon: ExecIcon,
       tone: execTone,
       body: exec === 'EXECUTED' ? 'Executed (simulated)' : exec === 'REFUSED' ? 'Refused by gateway' : exec === 'ERROR' ? 'Error' : 'Not attempted',
-      sub: execution?.reference ?? execution?.gateway ?? 'simulated-tool-gateway',
+      sub: execution?.reference ?? (execution?.http_status ? `HTTP ${execution.http_status}` : execution?.gateway) ?? (record.source === 'api' ? 'backend gateway' : 'simulated-tool-gateway'),
     },
   ] as const;
 

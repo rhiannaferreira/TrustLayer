@@ -70,6 +70,12 @@ export interface EvaluationRequest {
   action: AgentAction;
   evidence: EvidenceItem[];
   policy_id: string;
+  /** Ask the backend for optional AI (Luminal) advisory analysis. */
+  use_ai?: boolean;
+  /**
+   * Frontend-only context (permissions, agent reasoning). Sent to the in-browser mock engine;
+   * NOT sent to the live backend, whose documented request has no `context` field.
+   */
   context?: EvaluationContext;
 }
 
@@ -89,8 +95,13 @@ export interface EvaluationCheck {
   policy_id?: string;
 }
 
+/** Where an evidence flag came from. Backends that do not say are treated as deterministic. */
+export type FlagOrigin = 'deterministic' | 'ai' | 'unknown';
+
 export interface EvidenceFlag {
   evidence_id: string;
+  /** Detector that raised the flag, when known. */
+  origin?: FlagOrigin;
   type: string;
   severity: FlagSeverity;
   description: string;
@@ -109,6 +120,17 @@ export interface Alternative {
   reason?: string;
 }
 
+/**
+ * Normalized AI advisory status.
+ * - completed: the backend reports a finished inference.
+ * - failed: the backend attempted inference and it failed.
+ * - unavailable: AI not configured / not reachable on the backend.
+ * - not_requested: use_ai was false, or AI was skipped.
+ * - none: no AI information at all (e.g. Demo Mode, or older backend).
+ * - unknown: the backend sent a status string the frontend does not recognise (shown verbatim).
+ */
+export type AiOutcome = 'completed' | 'failed' | 'unavailable' | 'not_requested' | 'none' | 'unknown';
+
 export interface EvaluationResponse {
   evaluation_id: string;
   decision: Decision;
@@ -120,6 +142,17 @@ export interface EvaluationResponse {
   execution_allowed: boolean;
   created_at: string;
   policy_version?: number;
+  // ---- Live backend fields (FastAPI). Optional so Demo Mode and older records still type-check.
+  agent_id?: string;
+  /** Exact action the backend evaluated (and will authorize at the execution gateway). */
+  action?: AgentAction;
+  policy_versions?: unknown;
+  ai_analysis?: unknown;
+  /** Raw ai_status string exactly as returned by the backend. */
+  ai_status?: string | null;
+  ai_error?: string | null;
+  review_status?: string | null;
+  executed?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +243,7 @@ export interface Product {
 // ---------------------------------------------------------------------------
 
 export type DataSource = 'mock' | 'api';
-export type RecordOrigin = 'playground' | 'attack-lab' | 'seed' | 'remote';
+export type RecordOrigin = 'playground' | 'attack-lab' | 'seed' | 'remote' | 'demo';
 
 export type ReviewStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -232,6 +265,30 @@ export interface ExecutionResult {
   message: string;
   /** Simulated order reference when status is EXECUTED. */
   reference?: string;
+  /** HTTP status returned by the backend gateway (Live Backend Mode only). */
+  http_status?: number;
+  /** True when the backend answered 409: this authorization was already used. */
+  duplicate?: boolean;
+  /** Raw response body from the backend gateway. */
+  raw?: unknown;
+}
+
+/** One HTTP exchange (or one simulated in-browser call), kept for technical inspection. */
+export interface ApiExchange {
+  id: string;
+  method: string;
+  path: string;
+  url: string;
+  started_at: string;
+  /** Measured wall-clock time of the real request. Absent for simulated calls. */
+  duration_ms?: number;
+  request_body?: unknown;
+  status?: number;
+  ok: boolean;
+  response_body?: unknown;
+  error?: string;
+  /** True when no HTTP request was made (Demo Mode in-browser engine). */
+  simulated?: boolean;
 }
 
 export type TimelineKind =
@@ -245,6 +302,7 @@ export type TimelineKind =
   | 'REVIEW_REQUESTED'
   | 'REVIEW_APPROVED'
   | 'REVIEW_REJECTED'
+  | 'EXECUTION_DUPLICATE'
   | 'RETRY_CREATED';
 
 export interface TimelineEvent {
@@ -269,6 +327,16 @@ export interface EvaluationRecord {
   retry_of?: string;
   /** True for the small, labelled seed dataset created by Reset Demo. */
   seeded?: boolean;
+  /** Every execution attempt in order (the latest meaningful result is in `execution`). */
+  execution_attempts?: ExecutionResult[];
+  /** Raw evaluation JSON exactly as the backend returned it (Live Backend Mode). */
+  raw?: unknown;
+  /** HTTP exchanges observed for this evaluation (request/response JSON inspector). */
+  exchanges?: ApiExchange[];
+  /** Differences between the backend response and the frontend's expected contract. */
+  contract_notes?: string[];
+  /** True when the request had to be rebuilt from a history item (evidence/intent may be missing). */
+  request_reconstructed?: boolean;
 }
 
 /** Shape returned by GET /api/v1/audit-events (and derived locally in mock mode). */
@@ -280,12 +348,17 @@ export interface AuditEvent {
   action: AgentAction;
   checks: EvaluationCheck[];
   policy_version: number | null;
-  decision: Decision;
-  risk_level: RiskLevel;
+  /** Null when a backend audit event does not carry a decision (e.g. an execution event). */
+  decision: Decision | null;
+  risk_level: RiskLevel | null;
   execution_status: ExecutionStatus;
   explanation: string;
   review_state: ReviewStatus;
   source: DataSource;
+  /** Backend event type, when the backend sends one. */
+  event_type?: string;
+  /** Raw backend event JSON. */
+  raw?: unknown;
 }
 
 export interface ApiErrorInfo {

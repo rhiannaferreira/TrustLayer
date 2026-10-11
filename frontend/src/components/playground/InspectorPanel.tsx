@@ -5,6 +5,7 @@ import { CheckList } from '@/components/evaluation/CheckList';
 import { ExecutionFlow } from '@/components/evaluation/ExecutionFlow';
 import { AlternativesList } from '@/components/evaluation/AlternativesList';
 import { ReviewControls } from '@/components/evaluation/ReviewControls';
+import { ExecutionPanel } from '@/components/evaluation/ExecutionPanel';
 import { DECISION_LABEL } from '@/lib/format';
 import { effectiveReviewStatus } from '@/lib/records';
 import { cn } from '@/lib/cn';
@@ -19,6 +20,7 @@ interface InspectorPanelProps {
   onRetry: () => void;
   reviewBusy: boolean;
   retryDisabled: boolean;
+  onExecutingChange?: (busy: boolean) => void;
 }
 
 const BANNER = {
@@ -27,7 +29,7 @@ const BANNER = {
   REVIEW_REQUIRED: { cls: 'border-warn/35 bg-warn/[0.07] text-warn', icon: ShieldAlert, label: 'REVIEW REQUIRED' },
 } as const;
 
-export function InspectorPanel({ record, waiting, onInspectEvidence, onViewAudit, onRequestReview, onRetry, reviewBusy, retryDisabled }: InspectorPanelProps) {
+export function InspectorPanel({ record, waiting, onInspectEvidence, onViewAudit, onRequestReview, onRetry, reviewBusy, retryDisabled, onExecutingChange }: InspectorPanelProps) {
   if (!record) {
     return (
       <div className="space-y-3" aria-busy={waiting}>
@@ -80,7 +82,15 @@ export function InspectorPanel({ record, waiting, onInspectEvidence, onViewAudit
         <Button size="sm" variant="secondary" icon={<FileClock className="h-3.5 w-3.5" />} onClick={onViewAudit}>
           View audit record
         </Button>
-        <Button size="sm" variant="secondary" icon={<UserRoundSearch className="h-3.5 w-3.5" />} onClick={onRequestReview} loading={reviewBusy} disabled={record.review.status !== 'NONE'}>
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={<UserRoundSearch className="h-3.5 w-3.5" />}
+          onClick={onRequestReview}
+          loading={reviewBusy}
+          disabled={record.review.status !== 'NONE' || record.source === 'api'}
+          title={record.source === 'api' ? 'The backend has no endpoint to escalate this decision to review' : undefined}
+        >
           {record.review.status !== 'NONE' ? 'Review requested' : 'Request human review'}
         </Button>
         <Button
@@ -98,7 +108,11 @@ export function InspectorPanel({ record, waiting, onInspectEvidence, onViewAudit
       <section>
         <p className="label mb-1.5">Proposal → authorization → execution</p>
         <ExecutionFlow record={record} compact />
-        {record.execution && <p className="mt-1.5 text-xs text-muted">{record.execution.message}</p>}
+      </section>
+
+      <section>
+        <p className="label mb-1.5">Execution gateway</p>
+        <ExecutionPanel record={record} onBusyChange={onExecutingChange} />
       </section>
 
       <section>
@@ -135,11 +149,11 @@ export function InspectorPanel({ record, waiting, onInspectEvidence, onViewAudit
         </section>
       )}
 
-      {(reviewStatus !== 'NONE' || record.execution?.status !== 'EXECUTED') && (
+      {reviewStatus !== 'NONE' && (
         <section className="border-t border-line pt-3">
           <div className="mb-2 flex items-center gap-2">
             <p className="label">Human oversight</p>
-            {reviewStatus !== 'NONE' && <ReviewBadge status={reviewStatus} source={record.source} />}
+            <ReviewBadge status={reviewStatus} source={record.source} />
           </div>
           <ReviewControls record={record} hideRequest />
         </section>

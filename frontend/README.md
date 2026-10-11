@@ -11,32 +11,52 @@ risk, then approves, blocks or escalates to a human. This is the web console for
 
 Requires Node 18+ (tested on Node 22).
 
+**Demo Mode (no backend):**
+
 ```bash
 cd frontend
-cp .env.example .env      # optional: defaults are mock mode + http://localhost:8000
 npm install
-npm run dev               # http://localhost:5173
+npm run dev               # http://localhost:5173  (open /demo for the guided demo)
 ```
+
+**Live Backend Mode (FastAPI on 127.0.0.1:8000):**
+
+```bash
+# terminal 1: start the backend so it listens on http://127.0.0.1:8000
+# terminal 2:
+cd frontend
+cp .env.example .env
+# in .env: VITE_USE_MOCKS=false  (keep VITE_API_BASE_URL empty to use the dev proxy)
+npm install
+npm run dev
+```
+
+The dev server proxies `/health`, `/openapi.json` and `/api/*` to `VITE_BACKEND_PROXY_TARGET`
+(default `http://127.0.0.1:8000`), so no CORS setup is needed. You can also switch mode and
+base URL at runtime in Settings (gear icon in the top bar).
 
 Other commands:
 
 ```bash
 npm run build     # type-check + production build into dist/
-npm run preview   # serve the production build on http://localhost:4173
-npm test          # vitest: mock policy engine, tool gateway, injection heuristics, Attack Lab flow
+npm run preview   # serve the production build on http://localhost:4173 (same proxy)
+npm test          # vitest, including live-mode tests against a mocked fetch
 ```
 
 ## Modes
 
 | Mode | How to enable | What happens |
 | --- | --- | --- |
-| **Demo mode (mock)** | `VITE_USE_MOCKS=true` (default) | Evaluations run in the browser with deterministic rules. No backend needed. |
-| **Live API** | `VITE_USE_MOCKS=false`, or the mode pill in the top bar | Evaluations go to `VITE_API_BASE_URL`. Errors are shown; mock results are never substituted. |
+| **Demo Mode** | `VITE_USE_MOCKS=true` (default) or Settings | Evaluations run in the browser with deterministic rules. Clearly labelled "Demo". |
+| **Live Backend Mode** | `VITE_USE_MOCKS=false` or Settings | Every call goes to the FastAPI backend. Errors are shown; mock results are never substituted. |
 
-Mock and backend records are kept separate; each view shows records from the active source only.
-The top bar also pings `GET /health` and shows whether the backend is reachable.
+Demo and live records are kept separate. The top bar indicator shows Connected / Disconnected /
+Checking, and the AI state: Configured (Luminal set up), Verified (an evaluation actually
+completed AI inference), Unavailable, or AI Request Failed. Click it for details, including a
+check of the backend's `/openapi.json` against what the frontend expects.
 
-The backend contract is in **[BACKEND_INTEGRATION.md](./BACKEND_INTEGRATION.md)**.
+The backend contract is in **[BACKEND_INTEGRATION.md](./BACKEND_INTEGRATION.md)**; open questions
+for the backend are in **[BACKEND_REQUESTS.md](./BACKEND_REQUESTS.md)**.
 
 ## Two-minute demo script
 
@@ -111,6 +131,8 @@ src/
 | `/` | Overview dashboard |
 | `/playground` | Agent Playground |
 | `/decisions` | Live Decisions |
-| `/attack-lab` | Attack Lab |
+| `/investigate` | Decision Investigation (`?id=<evaluation_id>&replay=1`) |
+| `/attack-lab` | Attack Lab (original vs. modified comparison) |
+| `/demo` | Guided demo (full screen, 5 scenes) |
 | `/policies` | Policies |
 | `/audit` | Audit Trail (`/audit?id=<evaluation_id>` opens a record) |

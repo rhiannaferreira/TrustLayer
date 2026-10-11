@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorBanner, errorMessage } from '@/components/ui/ErrorBanner';
 import { AuditDrawer } from '@/components/audit/AuditDrawer';
 import { createHttpClient } from '@/services/api';
+import { normalizeAuditEvent } from '@/services/liveContract';
 import { toAuditEvent } from '@/lib/records';
 import { downloadJson, timestampSlug } from '@/lib/download';
 import { AGENTS, actionLabel, agentName } from '@/data/agents';
@@ -37,7 +38,9 @@ export function AuditPage() {
   const events = useMemo(() => {
     const local = records.map(toAuditEvent);
     if (dataSource !== 'api' || !remote.length) return local;
-    const byId = new Map(local.map((e) => [e.event_id, e]));
+    // Backend audit events are authoritative: drop client-derived events for the same evaluation.
+    const remoteEvals = new Set(remote.map((e) => e.evaluation_id));
+    const byId = new Map(local.filter((e) => !remoteEvals.has(e.evaluation_id)).map((e) => [e.event_id, e]));
     for (const e of remote) byId.set(e.event_id, { ...e, source: 'api' });
     return Array.from(byId.values()).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   }, [records, remote, dataSource]);
@@ -82,7 +85,7 @@ export function AuditPage() {
   const loadRemote = async () => {
     setLoading(true);
     try {
-      const items = await createHttpClient(apiBaseUrl).listAuditEvents();
+      const items = (await createHttpClient(apiBaseUrl).listAuditEvents()).map(normalizeAuditEvent).filter((e): e is AuditEvent => e !== null);
       setRemote(items);
       setError(null);
       notify({ tone: 'success', title: 'Audit events loaded', description: `${items.length} event${items.length === 1 ? '' : 's'} from the backend.` });
@@ -216,7 +219,7 @@ export function AuditPage() {
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-muted">{e.policy_version !== null ? `v${e.policy_version}` : '—'}</td>
                     <td className="px-4 py-2.5">
-                      <DecisionBadge decision={e.decision} />
+                      {e.decision ? <DecisionBadge decision={e.decision} /> : <Badge>{e.event_type ?? 'event'}</Badge>}
                     </td>
                     <td className="px-4 py-2.5">
                       <ExecutionBadge status={e.execution_status} />

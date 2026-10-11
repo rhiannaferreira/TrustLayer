@@ -3,16 +3,22 @@
  * evaluation run in Attack Lab shows up immediately on the Overview, Live Decisions and
  * Audit Trail, and a policy edit affects the very next evaluation.
  *
+ * Two operating modes, never mixed:
+ * - Demo Mode ('mock'): the deterministic in-browser engine. Clearly labelled as simulated.
+ * - Live Backend Mode ('api'): the FastAPI backend. Errors are surfaced; nothing is ever
+ *   replaced with a mock result.
+ *
  * Demo state is persisted to localStorage. It is NOT an immutable audit log.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react';
 import { ENV_CONFIG, STORAGE_KEYS } from '@/lib/config';
-import { defaultPolicySet } from '@/data/policies';
+import { defaultPolicySet, POLICY_SET_ID } from '@/data/policies';
 import { createSeedRecords } from '@/lib/seed';
 import { buildRecord, withExecution } from '@/lib/records';
-import { createHttpClient, ApiError, type RemoteEvaluation } from '@/services/api';
+import { createHttpClient, ApiError, type ReviewOutcome, type Trace } from '@/services/api';
 import { createMockClient } from '@/services/mockApi';
-import { authorizeExecution, submitToGateway } from '@/services/toolGateway';
+import { submitToGateway } from '@/services/toolGateway';
+import { isObj, normalizeEvaluation, normalizeReviewStatus, type LivePolicy, type LiveProposal, type NormalizedEvaluation } from '@/services/liveContract';
 import { agentName } from '@/data/agents';
 import type {
   AnyPolicy,
@@ -22,6 +28,7 @@ import type {
   ExecutionResult,
   PolicyPatch,
   PolicySet,
+  Product,
   RecordOrigin,
   ReviewState,
 } from '@/types';
@@ -33,6 +40,20 @@ import type {
 export interface Settings {
   dataSource: DataSource;
   apiBaseUrl: string;
+  /** Request optional AI (Luminal) analysis on live evaluations. */
+  useAi: boolean;
+  /**
+   * Demo workflow option: submit ALLOW decisions to the gateway right after evaluation.
+   * Off by default — execution is a separate, explicit user action.
+   */
+  autoExecute: boolean;
+}
+
+export interface LiveState {
+  policies: LivePolicy[] | null;
+  policiesRaw: unknown;
+  policiesLoadedAt: string | null;
+  catalog: Product[] | null;
 }
 
 export interface AppState {
@@ -40,6 +61,7 @@ export interface AppState {
   policySet: PolicySet;
   settings: Settings;
   demoStartedAt: string;
+  live: LiveState;
 }
 
 type Action =
@@ -49,7 +71,10 @@ type Action =
   | { type: 'SET_POLICY'; policy: AnyPolicy; bumpVersion: boolean }
   | { type: 'SET_POLICY_SET'; policySet: PolicySet }
   | { type: 'SET_SETTINGS'; settings: Partial<Settings> }
+  | { type: 'SET_LIVE'; live: Partial<LiveState> }
   | { type: 'RESET'; state: AppState };
+
+const EMPTY_LIVE: LiveState = { policies: null, policiesRaw: null, policiesLoadedAt: null, catalog: null };
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -61,8 +86,7 @@ function reducer(state: AppState, action: Action): AppState {
       const byId = new Map(state.records.map((r) => [r.id, r]));
       for (const incoming of action.records) {
         const existing = byId.get(incoming.id);
-        // Keep locally observed timeline/execution when we already know this evaluation.
-        byId.set(incoming.id, existing ? { ...existing, response: incoming.response } : incoming);
+        byId.set(incoming.id, existing ? mergeRemote(existing, incoming) : incoming);
       }
       const merged = Array.from(byId.values()).sort((a, b) => b.response.created_at.localeCompare(a.response.created_at));
       return { ...state, records: merged };
@@ -83,19 +107,41 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, policySet: action.policySet };
     case 'SET_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.settings } };
+    case 'SET_LIVE':
+      return { ...state, live: { ...state.live, ...action.live } };
     case 'RESET':
       return action.state;
   }
 }
 
-function freshState(settings?: Settings): AppState {
+/** Backend history wins for decision data; locally observed request/evidence/exchanges are kept. */
+function mergeRemote(existing: EvaluationRecord, incoming: EvaluationRecord): EvaluationRecord {
+  const keepLocalRequest = !existing.request_reconstructed;
+  return {
+    ...existing,
+    response: { ...incoming.response, created_at: incoming.response.created_at || existing.response.created_at },
+    raw: incoming.raw,
+    contract_notes: incoming.contract_notes,
+    request: keepLocalRequest ? existing.request : incoming.request,
+    request_reconstructed: keepLocalRequest ? existing.request_reconstructed : incoming.request_reconstructed,
+    review: incoming.review.status !== 'NONE' ? { ...existing.review, status: incoming.review.status } : existing.review,
+    execution: existing.execution ?? incoming.execution,
+  };
+}
+
+export function defaultSettings(): Settings {
+  return { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl, useAi: true, autoExecute: false };
+}
+
+export function freshState(settings?: Settings): AppState {
   const now = new Date();
   const policySet = defaultPolicySet(now.toISOString());
   return {
     records: createSeedRecords(policySet, now),
     policySet,
-    settings: settings ?? { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl },
+    settings: settings ?? defaultSettings(),
     demoStartedAt: now.toISOString(),
+    live: EMPTY_LIVE,
   };
 }
 
@@ -104,7 +150,9 @@ function loadState(): AppState {
     const raw = localStorage.getItem(STORAGE_KEYS.state);
     if (raw) {
       const parsed = JSON.parse(raw) as AppState;
-      if (parsed && Array.isArray(parsed.records) && parsed.policySet?.policies && parsed.settings) return parsed;
+      if (parsed && Array.isArray(parsed.records) && parsed.policySet?.policies && parsed.settings) {
+        return { ...parsed, settings: { ...defaultSettings(), ...parsed.settings }, live: { ...EMPTY_LIVE, ...(parsed.live ?? {}) } };
+      }
     }
   } catch {
     /* corrupted or unavailable storage — start fresh */
@@ -121,25 +169,39 @@ export interface RunEvaluationInput {
   origin: RecordOrigin;
   scenario?: string;
   retryOf?: string;
-  /** Submit to the tool gateway right after evaluation (default true). */
+  /** Submit to the gateway right after evaluation. Defaults to settings.autoExecute. */
   autoExecute?: boolean;
+  /** Override the AI setting for this run (Live Backend Mode only). */
+  useAi?: boolean;
+  /** Exchanges that happened before the evaluation (e.g. the agent proposal call). */
+  priorExchanges?: Trace;
 }
 
-interface AppStoreValue {
+export interface AppStoreValue {
   state: AppState;
   /** Records for the active data source only (mock vs. real API are never mixed). */
   records: EvaluationRecord[];
   policySet: PolicySet;
   dataSource: DataSource;
   apiBaseUrl: string;
+  settings: Settings;
+  live: LiveState;
   getRecord: (id: string) => EvaluationRecord | undefined;
   runEvaluation: (input: RunEvaluationInput) => Promise<EvaluationRecord>;
+  /** Submit an evaluated action to the execution gateway. The gateway (server in live mode) decides. */
   executeRecord: (id: string) => Promise<ExecutionResult>;
   requestReview: (id: string, note?: string) => Promise<ReviewState>;
+  /** Live: POST /reviews/{id}/decision. Demo: simulated reviewer decision. */
+  decideReview: (id: string, outcome: ReviewOutcome, note?: string) => Promise<void>;
   resolveDemoReview: (id: string, outcome: 'APPROVED' | 'REJECTED', note?: string) => void;
   updatePolicy: (id: string, patch: PolicyPatch) => Promise<AnyPolicy>;
   resetPolicies: () => Promise<void>;
   refreshFromBackend: () => Promise<number>;
+  refreshRecord: (id: string) => Promise<EvaluationRecord | undefined>;
+  loadLivePolicies: () => Promise<LivePolicy[]>;
+  patchLivePolicy: (id: string, patch: Record<string, unknown>) => Promise<void>;
+  loadCatalog: () => Promise<Product[]>;
+  proposeLive: (intent: string, trace: Trace) => Promise<LiveProposal>;
   setSettings: (settings: Partial<Settings>) => void;
   resetDemo: () => void;
 }
@@ -173,22 +235,10 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
       if (record.source === 'mock') {
         result = submitToGateway(record);
       } else {
-        // Local pre-check first; the backend remains the authority for real execution.
-        const verdict = authorizeExecution(record);
-        if (!verdict.allowed) {
-          result = { status: 'REFUSED', at: new Date().toISOString(), gateway: 'client-precheck', message: verdict.reason };
-        } else {
-          try {
-            result = await http.execute(record.id);
-          } catch (err) {
-            result = {
-              status: 'ERROR',
-              at: new Date().toISOString(),
-              gateway: 'backend',
-              message: err instanceof ApiError ? `Backend execution failed: ${err.message}` : String(err),
-            };
-          }
-        }
+        // The backend gateway is the authority: always ask it, with the exact evaluated action.
+        const trace: Trace = [];
+        result = await http.execute(record.id, record.response.action ?? record.request.action, trace);
+        dispatch({ type: 'UPDATE_RECORD', id, update: (r) => ({ ...r, exchanges: [...(r.exchanges ?? []), ...trace] }) });
       }
       dispatch({ type: 'UPDATE_RECORD', id, update: (r) => withExecution(r, result) });
       return result;
@@ -200,17 +250,39 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     async (input: RunEvaluationInput): Promise<EvaluationRecord> => {
       const submittedAt = new Date().toISOString();
       const source = stateRef.current.settings.dataSource;
-      const response = source === 'mock' ? await mock.evaluate(input.request) : await http.evaluate(input.request);
-      let record = buildRecord({
-        request: input.request,
-        response,
-        source,
-        origin: input.origin,
-        policyVersion: stateRef.current.policySet.version,
-        scenario: input.scenario,
-        retryOf: input.retryOf,
-        submittedAt,
-      });
+      const trace: Trace = [...(input.priorExchanges ?? [])];
+      let record: EvaluationRecord;
+      if (source === 'mock') {
+        const response = await mock.evaluate(input.request, trace);
+        record = buildRecord({
+          request: input.request,
+          response,
+          source,
+          origin: input.origin,
+          policyVersion: stateRef.current.policySet.version,
+          scenario: input.scenario,
+          retryOf: input.retryOf,
+          submittedAt,
+        });
+        record.raw = response;
+      } else {
+        const request: EvaluationRequest = { ...input.request, use_ai: input.useAi ?? stateRef.current.settings.useAi };
+        const result = await http.evaluate(request, trace);
+        record = buildRecord({
+          request,
+          response: result.response,
+          source,
+          origin: input.origin,
+          policyVersion: result.response.policy_version ?? 0,
+          scenario: input.scenario,
+          retryOf: input.retryOf,
+          submittedAt,
+        });
+        record.raw = result.raw;
+        record.contract_notes = result.notes;
+        record.review = reviewFromResponse(result.response.review_status, result.response.decision);
+      }
+      record.exchanges = trace;
       if (input.retryOf) {
         const parentId = input.retryOf;
         dispatch({
@@ -222,11 +294,9 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
           }),
         });
       }
-      if (input.autoExecute !== false && source === 'mock') {
-        record = withExecution(record, submitToGateway(record));
-      }
       dispatch({ type: 'ADD_RECORD', record });
-      if (input.autoExecute !== false && source === 'api') {
+      const auto = input.autoExecute ?? stateRef.current.settings.autoExecute;
+      if (auto && record.response.decision === 'ALLOW') {
         await executeRecord(record.id);
         return stateRef.current.records.find((r) => r.id === record.id) ?? record;
       }
@@ -235,30 +305,25 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     [mock, http, executeRecord],
   );
 
-  const requestReview = useCallback(
-    async (id: string, note?: string): Promise<ReviewState> => {
-      const record = stateRef.current.records.find((r) => r.id === id);
-      if (!record) throw new Error(`Unknown evaluation ${id}`);
-      const now = new Date().toISOString();
-      let review: ReviewState;
-      if (record.source === 'api') {
-        review = await http.requestReview(id, note);
-      } else {
-        review = { status: 'PENDING', requested_at: now, note };
-      }
-      dispatch({
-        type: 'UPDATE_RECORD',
-        id,
-        update: (r) => ({
-          ...r,
-          review,
-          timeline: [...r.timeline, { at: now, kind: 'REVIEW_REQUESTED', label: 'Human review requested', detail: note }],
-        }),
-      });
-      return review;
-    },
-    [http],
-  );
+  const requestReview = useCallback(async (id: string, note?: string): Promise<ReviewState> => {
+    const record = stateRef.current.records.find((r) => r.id === id);
+    if (!record) throw new Error(`Unknown evaluation ${id}`);
+    if (record.source === 'api') {
+      throw new Error('The backend has no endpoint to escalate an evaluation to review. Reviews are created by the backend for REVIEW_REQUIRED decisions.');
+    }
+    const now = new Date().toISOString();
+    const review: ReviewState = { status: 'PENDING', requested_at: now, note };
+    dispatch({
+      type: 'UPDATE_RECORD',
+      id,
+      update: (r) => ({
+        ...r,
+        review,
+        timeline: [...r.timeline, { at: now, kind: 'REVIEW_REQUESTED', label: 'Human review requested', detail: note }],
+      }),
+    });
+    return review;
+  }, []);
 
   const resolveDemoReview = useCallback((id: string, outcome: 'APPROVED' | 'REJECTED', note?: string) => {
     const now = new Date().toISOString();
@@ -284,42 +349,120 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     });
   }, []);
 
+  const decideReview = useCallback(
+    async (id: string, outcome: ReviewOutcome, note?: string) => {
+      const record = stateRef.current.records.find((r) => r.id === id);
+      if (!record) throw new Error(`Unknown evaluation ${id}`);
+      if (record.source === 'mock') {
+        resolveDemoReview(id, outcome, note);
+        return;
+      }
+      const trace: Trace = [];
+      try {
+        const body = await http.reviewDecision(id, outcome, note, trace);
+        const now = new Date().toISOString();
+        let updatedResponse: NormalizedEvaluation | null = null;
+        if (isObj(body) && (body.evaluation_id || isObj(body.evaluation))) {
+          try {
+            updatedResponse = normalizeEvaluation(isObj(body.evaluation) ? body.evaluation : body, record.request);
+          } catch {
+            updatedResponse = null;
+          }
+        }
+        const reported = isObj(body) ? normalizeReviewStatus(body.review_status ?? body.status ?? body.decision) : undefined;
+        const status = updatedResponse ? normalizeReviewStatus(updatedResponse.response.review_status) ?? reported ?? outcome : reported ?? outcome;
+        dispatch({
+          type: 'UPDATE_RECORD',
+          id,
+          update: (r) => ({
+            ...r,
+            response: updatedResponse ? updatedResponse.response : r.response,
+            raw: updatedResponse ? body : r.raw,
+            exchanges: [...(r.exchanges ?? []), ...trace],
+            review: { ...r.review, status, resolved_at: now, resolved_by: 'trustlayer-console', note },
+            timeline: [
+              ...r.timeline,
+              {
+                at: now,
+                kind: status === 'APPROVED' ? 'REVIEW_APPROVED' : 'REVIEW_REJECTED',
+                label: `Reviewer decision recorded by backend: ${status.toLowerCase()}`,
+                detail: 'POST /reviews/{id}/decision accepted.',
+              },
+            ],
+          }),
+        });
+      } catch (err) {
+        dispatch({ type: 'UPDATE_RECORD', id, update: (r) => ({ ...r, exchanges: [...(r.exchanges ?? []), ...trace] }) });
+        throw err;
+      }
+    },
+    [http, resolveDemoReview],
+  );
+
   const updatePolicy = useCallback(
     async (id: string, patch: PolicyPatch): Promise<AnyPolicy> => {
-      const source = stateRef.current.settings.dataSource;
-      // In API mode the change is only applied after the backend confirms it.
-      const updated = source === 'mock' ? await mock.updatePolicy(id, patch) : await http.updatePolicy(id, patch);
+      if (stateRef.current.settings.dataSource === 'api') {
+        throw new Error('Demo policy editor is not used in Live Backend Mode; edit backend policies instead.');
+      }
+      const updated = await mock.updatePolicy(id, patch);
       dispatch({ type: 'SET_POLICY', policy: updated, bumpVersion: true });
       return updated;
     },
-    [mock, http],
+    [mock],
   );
 
   const resetPolicies = useCallback(async () => {
-    const source = stateRef.current.settings.dataSource;
     const defaults = defaultPolicySet();
-    if (source === 'api') {
-      for (const policy of defaults.policies) {
-        const confirmed = await http.updatePolicy(policy.id, { enabled: policy.enabled, config: policy.config });
-        dispatch({ type: 'SET_POLICY', policy: confirmed, bumpVersion: false });
-      }
-      dispatch({ type: 'SET_POLICY_SET', policySet: { ...stateRef.current.policySet, version: stateRef.current.policySet.version + 1 } });
-      return;
-    }
-    dispatch({
-      type: 'SET_POLICY_SET',
-      policySet: { ...defaults, version: stateRef.current.policySet.version + 1 },
-    });
+    dispatch({ type: 'SET_POLICY_SET', policySet: { ...defaults, version: stateRef.current.policySet.version + 1 } });
+  }, []);
+
+  const loadLivePolicies = useCallback(async (): Promise<LivePolicy[]> => {
+    const { policies, raw } = await http.getPolicies();
+    dispatch({ type: 'SET_LIVE', live: { policies, policiesRaw: raw, policiesLoadedAt: new Date().toISOString() } });
+    return policies;
   }, [http]);
+
+  const patchLivePolicy = useCallback(
+    async (id: string, patch: Record<string, unknown>) => {
+      await http.patchPolicy(id, patch);
+      // Re-read so the UI shows the backend's confirmed state, not our optimistic guess.
+      await loadLivePolicies();
+    },
+    [http, loadLivePolicies],
+  );
+
+  const loadCatalog = useCallback(async (): Promise<Product[]> => {
+    const catalog = await http.catalog();
+    dispatch({ type: 'SET_LIVE', live: { catalog } });
+    return catalog;
+  }, [http]);
+
+  const proposeLive = useCallback(
+    (intent: string, trace: Trace) => http.propose({ agent_id: 'purchase-pilot', intent, policy_id: POLICY_SET_ID }, trace),
+    [http],
+  );
 
   const refreshFromBackend = useCallback(async (): Promise<number> => {
     if (stateRef.current.settings.dataSource !== 'api') return 0;
-    const [items, policySet] = await Promise.all([http.listEvaluations(), http.getPolicies().catch(() => null)]);
+    const items = await http.listEvaluations();
     const records = items.map((item) => remoteToRecord(item));
     dispatch({ type: 'MERGE_REMOTE', records });
-    if (policySet && Array.isArray(policySet.policies)) dispatch({ type: 'SET_POLICY_SET', policySet });
+    try {
+      await loadLivePolicies();
+    } catch {
+      /* policies are optional for history refresh; their own page reports errors */
+    }
     return records.length;
-  }, [http]);
+  }, [http, loadLivePolicies]);
+
+  const refreshRecord = useCallback(
+    async (id: string) => {
+      const item = await http.getEvaluation(id);
+      dispatch({ type: 'MERGE_REMOTE', records: [remoteToRecord(item)] });
+      return stateRef.current.records.find((r) => r.id === id);
+    },
+    [http],
+  );
 
   const setSettings = useCallback((settings: Partial<Settings>) => dispatch({ type: 'SET_SETTINGS', settings }), []);
 
@@ -335,14 +478,22 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     policySet: state.policySet,
     dataSource,
     apiBaseUrl: state.settings.apiBaseUrl,
+    settings: state.settings,
+    live: state.live,
     getRecord,
     runEvaluation,
     executeRecord,
     requestReview,
+    decideReview,
     resolveDemoReview,
     updatePolicy,
     resetPolicies,
     refreshFromBackend,
+    refreshRecord,
+    loadLivePolicies,
+    patchLivePolicy,
+    loadCatalog,
+    proposeLive,
     setSettings,
     resetDemo,
   };
@@ -350,28 +501,32 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
   return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>;
 }
 
-function remoteToRecord(item: RemoteEvaluation): EvaluationRecord {
-  const request: EvaluationRequest = item.request ?? {
-    agent_id: item.agent_id ?? 'unknown-agent',
-    intent: '',
-    action: { type: 'unknown', parameters: {} },
-    evidence: [],
-    policy_id: 'unknown',
-  };
+function reviewFromResponse(reviewStatus: string | null | undefined, decision: string): ReviewState {
+  const s = normalizeReviewStatus(reviewStatus);
+  if (s) return { status: s };
+  return { status: decision === 'REVIEW_REQUIRED' ? 'PENDING' : 'NONE' };
+}
+
+export function remoteToRecord(item: NormalizedEvaluation & { raw: unknown }): EvaluationRecord {
+  const { response } = item;
+  const request = item.request!;
   const record = buildRecord({
     request,
-    response: item,
+    response,
     source: 'api',
     origin: 'remote',
-    policyVersion: item.policy_version ?? 0,
-    submittedAt: item.created_at,
+    policyVersion: response.policy_version ?? 0,
+    submittedAt: response.created_at,
   });
   record.agent_name = agentName(request.agent_id);
+  record.raw = item.raw;
+  record.contract_notes = item.notes;
+  record.request_reconstructed = item.requestReconstructed;
   record.timeline = record.timeline.filter((t) => t.kind !== 'PROPOSED' && t.kind !== 'SUBMITTED');
-  record.timeline.unshift({ at: item.created_at, kind: 'SUBMITTED', label: 'Loaded from backend history' });
-  if (item.review_state && item.review_state !== 'NONE') record.review = { status: item.review_state };
-  if (item.execution_status && item.execution_status !== 'NOT_ATTEMPTED') {
-    record.execution = { status: item.execution_status, at: item.created_at, gateway: 'backend', message: `Reported by backend: ${item.execution_status}` };
+  record.timeline.unshift({ at: response.created_at, kind: 'SUBMITTED', label: 'Loaded from backend history' });
+  record.review = reviewFromResponse(response.review_status, response.decision);
+  if (response.executed === true) {
+    record.execution = { status: 'EXECUTED', at: response.created_at, gateway: 'backend', message: 'Backend history reports this action was executed (simulated).' };
   }
   return record;
 }
@@ -386,3 +541,5 @@ export function useRecord(id: string | null | undefined): EvaluationRecord | und
   const { state } = useAppStore();
   return id ? state.records.find((r) => r.id === id) : undefined;
 }
+
+export { ApiError };

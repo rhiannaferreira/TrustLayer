@@ -26,8 +26,8 @@ export function AuditDrawer({ event, onClose }: { event: AuditEvent | null; onCl
       {event && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <DecisionBadge decision={event.decision} size="lg" />
-            <RiskBadge risk={event.risk_level} />
+            {event.decision ? <DecisionBadge decision={event.decision} size="lg" /> : <Badge>{event.event_type ?? 'Event'}</Badge>}
+            {event.risk_level && <RiskBadge risk={event.risk_level} />}
             <ExecutionBadge status={event.execution_status} />
             <ReviewBadge status={event.review_state} source={event.source} />
             <Badge tone={event.source === 'api' ? 'accent' : 'neutral'}>{event.source === 'api' ? 'Backend' : 'Local demo record'}</Badge>
@@ -63,7 +63,7 @@ export function AuditDrawer({ event, onClose }: { event: AuditEvent | null; onCl
               )}
             </div>
           ) : (
-            <JsonView value={record ? { audit_event: event, request: record.request, response: record.response, timeline: record.timeline } : { audit_event: event }} />
+            <JsonView value={record ? { audit_event: event.raw ?? event, request: record.request, response: record.response, timeline: record.timeline } : { audit_event: event.raw ?? event }} />
           )}
         </div>
       )}

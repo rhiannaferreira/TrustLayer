@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { cn } from '@/lib/cn';
 
 interface MetricCardProps {
@@ -8,6 +9,8 @@ interface MetricCardProps {
   tone: 'accent' | 'safe' | 'danger' | 'warn';
   caption: string;
   share?: number;
+  /** Makes the card a link (e.g. to filtered decision records). */
+  to?: string;
 }
 
 const TONE = {
@@ -17,9 +20,9 @@ const TONE = {
   warn: { icon: 'text-warn bg-warn/10 border-warn/20', bar: 'bg-warn' },
 } as const;
 
-export function MetricCard({ label, value, icon: Icon, tone, caption, share }: MetricCardProps) {
-  return (
-    <div className="card relative overflow-hidden p-4">
+export function MetricCard({ label, value, icon: Icon, tone, caption, share, to }: MetricCardProps) {
+  const body = (
+    <>
       <div className="flex items-start justify-between">
         <p className="text-xs font-medium text-muted">{label}</p>
         <span className={cn('grid h-7 w-7 place-items-center rounded-lg border', TONE[tone].icon)}>
@@ -33,6 +36,14 @@ export function MetricCard({ label, value, icon: Icon, tone, caption, share }: M
           <div className={cn('h-full rounded-full transition-all duration-500', TONE[tone].bar)} style={{ width: `${Math.round(share * 100)}%` }} />
         </div>
       )}
-    </div>
+    </>
   );
+  if (to) {
+    return (
+      <Link to={to} className="card relative block overflow-hidden p-4 transition-colors hover:border-line-strong focus-visible:border-accent" aria-label={`${label}: ${value}. ${caption}. View records`}>
+        {body}
+      </Link>
+    );
+  }
+  return <div className="card relative overflow-hidden p-4">{body}</div>;
 }

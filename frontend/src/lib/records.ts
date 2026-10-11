@@ -86,15 +86,31 @@ export function buildRecord(input: BuildRecordInput): EvaluationRecord {
   };
 }
 
+/**
+ * Record an execution attempt. Every attempt is kept in `execution_attempts`; a duplicate
+ * refusal (409) never overwrites an earlier successful execution.
+ */
 export function withExecution(record: EvaluationRecord, result: ExecutionResult): EvaluationRecord {
-  const kind = result.status === 'EXECUTED' ? 'EXECUTED' : result.status === 'REFUSED' ? 'EXECUTION_REFUSED' : 'EXECUTION_ERROR';
-  const label =
-    result.status === 'EXECUTED' ? 'Simulated tool executed' : result.status === 'REFUSED' ? 'Gateway refused execution' : 'Execution error';
+  const kind = result.duplicate ? 'EXECUTION_DUPLICATE' : result.status === 'EXECUTED' ? 'EXECUTED' : result.status === 'REFUSED' ? 'EXECUTION_REFUSED' : 'EXECUTION_ERROR';
+  const label = result.duplicate
+    ? 'Duplicate execution refused'
+    : result.status === 'EXECUTED'
+      ? 'Simulated tool executed'
+      : result.status === 'REFUSED'
+        ? 'Gateway refused execution'
+        : 'Execution error';
+  const keepPrevious = record.execution?.status === 'EXECUTED' && result.status !== 'EXECUTED';
   return {
     ...record,
-    execution: result,
+    execution: keepPrevious ? record.execution : result,
+    execution_attempts: [...(record.execution_attempts ?? (record.execution ? [record.execution] : [])), result],
     timeline: [...record.timeline, { at: result.at, kind, label, detail: result.message }],
   };
+}
+
+export function lastAttempt(record: EvaluationRecord): ExecutionResult | null {
+  const attempts = record.execution_attempts;
+  return attempts && attempts.length ? attempts[attempts.length - 1] : record.execution;
 }
 
 export function executionStatus(record: EvaluationRecord): ExecutionStatus {

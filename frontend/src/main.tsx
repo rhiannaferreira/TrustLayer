@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { AppStoreProvider } from '@/context/AppStore';
 import { ToastProvider } from '@/context/ToastContext';
+import { ConnectionProvider } from '@/context/ConnectionContext';
+import '@xyflow/react/dist/style.css';
 import { AppRoutes } from '@/App';
 import { STORAGE_KEYS } from '@/lib/config';
 import './index.css';
@@ -22,7 +24,9 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <ToastProvider>
         <AppStoreProvider>
-          <AppRoutes />
+          <ConnectionProvider>
+            <AppRoutes />
+          </ConnectionProvider>
         </AppStoreProvider>
       </ToastProvider>
     </BrowserRouter>

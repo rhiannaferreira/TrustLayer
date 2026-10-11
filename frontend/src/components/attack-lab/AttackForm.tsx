@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Play, RotateCcw, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
@@ -11,6 +11,7 @@ import { scanEvidence } from '@/lib/injection';
 import { formatCurrency } from '@/lib/format';
 import { useAppStore } from '@/context/AppStore';
 import type { AttackForm as AttackFormValues } from '@/data/scenarios';
+import type { Product } from '@/types';
 
 interface AttackFormProps {
   value: AttackFormValues;
@@ -19,10 +20,18 @@ interface AttackFormProps {
   onReset: () => void;
   running: boolean;
   dirty: boolean;
+  /** Baseline values: fields that differ are marked as modified. */
+  original?: AttackFormValues;
+  /** Product list to choose from (the backend catalog in Live Backend Mode). */
+  catalog?: Product[];
+  /** Replaces the default Run/Reset bar. */
+  footer?: ReactNode;
 }
 
-export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: AttackFormProps) {
-  const { policySet } = useAppStore();
+export function AttackForm({ value, onChange, onRun, onReset, running, dirty, original, catalog = CATALOG, footer }: AttackFormProps) {
+  const { policySet, dataSource } = useAppStore();
+  const mark = (key: keyof AttackFormValues, label: string) =>
+    original && JSON.stringify(original[key]) !== JSON.stringify(value[key]) ? `${label} · modified` : label;
   const set = <K extends keyof AttackFormValues>(key: K, v: AttackFormValues[K]) => onChange({ ...value, [key]: v });
   const isOrder = value.action_type === 'place_order';
 
@@ -44,8 +53,9 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
         onRun();
       }}
     >
+      {dataSource === 'mock' && (
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-raised/50 px-3 py-2 text-xs text-muted">
-        <span className="text-faint">Active policies:</span>
+        <span className="text-faint">Active demo policies:</span>
         {spending && <Badge tone={spending.enabled ? 'accent' : 'neutral'}>Limit {spending.enabled && spending.kind === 'spending_limit' ? formatCurrency(spending.config.max_amount) : 'off'}</Badge>}
         {vendors && vendors.kind === 'vendor_allowlist' && <Badge tone={vendors.enabled ? 'accent' : 'neutral'}>{vendors.enabled ? `${vendors.config.allowed_vendors.length} allowed vendors` : 'Any vendor'}</Badge>}
         <span className="font-mono text-faint">v{policySet.version}</span>
@@ -53,9 +63,10 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
           Edit
         </Link>
       </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Agent action" htmlFor="atk-action">
+        <Field label={mark('action_type', 'Proposed tool action')} htmlFor="atk-action">
           <select id="atk-action" className="input" value={value.action_type} onChange={(e) => set('action_type', e.target.value)}>
             {ACTION_TYPES.map((a) => (
               <option key={a.id} value={a.id}>
@@ -64,7 +75,7 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
             ))}
           </select>
         </Field>
-        <Field label="Vendor" htmlFor="atk-vendor">
+        <Field label={mark('vendor', 'Vendor')} htmlFor="atk-vendor">
           <input id="atk-vendor" className="input" list="atk-vendors" value={value.vendor} onChange={(e) => set('vendor', e.target.value)} />
           <datalist id="atk-vendors">
             {KNOWN_VENDORS.map((v) => (
@@ -72,25 +83,26 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
             ))}
           </datalist>
         </Field>
-        <Field label="Product" htmlFor="atk-product">
+        <Field label={mark('product_id', 'Product')} htmlFor="atk-product">
           <select
             id="atk-product"
             className="input"
             value={value.product_id}
             onChange={(e) => {
-              const p = CATALOG.find((x) => x.id === e.target.value);
-              onChange({ ...value, product_id: e.target.value, product_name: p?.name ?? '', price: p ? p.price : value.price, vendor: p ? p.vendor : value.vendor });
+              const p = catalog.find((x) => x.id === e.target.value);
+              onChange({ ...value, product_id: e.target.value, product_name: p?.name ?? '', price: p && Number.isFinite(p.price) ? p.price : value.price, vendor: p?.vendor || value.vendor });
             }}
           >
             <option value="">— none —</option>
-            {CATALOG.map((p) => (
+            {catalog.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} · {formatCurrency(p.price)}
               </option>
             ))}
+            {value.product_id && !catalog.some((p) => p.id === value.product_id) && <option value={value.product_id}>{value.product_name || value.product_id} (not in catalog)</option>}
           </select>
         </Field>
-        <Field label="Product price (USD)" htmlFor="atk-price" hint={isOrder ? undefined : 'Not used for non-purchase actions'}>
+        <Field label={mark('price', 'Purchase amount (USD)')} htmlFor="atk-price" hint={isOrder ? undefined : 'Not used for non-purchase actions'}>
           <input
             id="atk-price"
             className="input font-mono"
@@ -103,14 +115,14 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
         </Field>
       </div>
 
-      <Field label="User intent" htmlFor="atk-intent">
+      <Field label={mark('intent', 'Agent objective (user intent)')} htmlFor="atk-intent">
         <input id="atk-intent" className="input" value={value.intent} onChange={(e) => set('intent', e.target.value)} />
       </Field>
 
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label htmlFor="atk-evidence" className="text-xs font-medium text-muted">
-            Evidence text <span className="text-faint">(untrusted)</span>
+            {mark('evidence_text', 'Untrusted review / evidence text')} <span className="text-faint">(untrusted)</span>
           </label>
           <select aria-label="Evidence source" className="rounded-md border border-line bg-raised px-2 py-0.5 text-2xs text-muted" value={value.evidence_source} onChange={(e) => set('evidence_source', e.target.value)}>
             <option value="product_review">product_review</option>
@@ -145,13 +157,18 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
             );
           })}
         </div>
-        <p className="mt-1 text-2xs text-faint">Tools granted to the agent for this run. Restricted actions stay blocked by policy even if granted here.</p>
+        <p className="mt-1 text-2xs text-faint">
+          {dataSource === 'api'
+            ? 'Demo Mode only: the live backend request has no permissions field, so these are not sent (see BACKEND_REQUESTS.md).'
+            : 'Tools granted to the agent for this run. Restricted actions stay blocked by policy even if granted here.'}
+        </p>
       </fieldset>
 
       <Field label="Agent reasoning" htmlFor="atk-reasoning">
         <input id="atk-reasoning" className="input" value={value.reasoning} onChange={(e) => set('reasoning', e.target.value)} />
       </Field>
 
+      {footer ?? (
       <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
         <Button type="submit" variant="primary" loading={running} icon={<Play className="h-4 w-4" />}>
           Run attack
@@ -161,6 +178,7 @@ export function AttackForm({ value, onChange, onRun, onReset, running, dirty }: 
         </Button>
         {dirty && <span className="text-2xs text-warn">Inputs changed — run again to re-evaluate</span>}
       </div>
+      )}
     </form>
   );
 }

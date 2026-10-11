@@ -15,9 +15,10 @@ interface AgentPanelProps {
   running: boolean;
   activity: string[];
   proposal: AgentProposal | null;
+  live?: boolean;
 }
 
-export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal }: AgentPanelProps) {
+export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live }: AgentPanelProps) {
   const params = proposal?.request.action.parameters;
   return (
     <div className="space-y-4">
@@ -102,7 +103,9 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             </ol>
           )}
         </div>
-        <p className="mt-1.5 text-2xs text-faint">Demo agent: deterministic rule-based planner, not an LLM.</p>
+        <p className="mt-1.5 text-2xs text-faint">
+          {live ? 'Backend agent: POST /api/v1/agent/propose returns seeded demo scenarios. It is not free-form LLM planning.' : 'Demo agent: deterministic rule-based planner, not an LLM.'}
+        </p>
       </div>
 
       {proposal && params && (
@@ -112,13 +115,13 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             <Badge tone="accent">{actionLabel(proposal.request.action.type)}</Badge>
           </div>
           <dl className="grid grid-cols-2 gap-2 text-sm">
-            <Item icon={Package} label="Product" value={(params.product_name as string) ?? '—'} wide />
+            <Item icon={Package} label="Product" value={(params.product_name as string) ?? (params.product_id as string) ?? '—'} wide />
             <Item icon={Tag} label="Price" value={params.price !== undefined ? formatCurrency(params.price) : '—'} />
             <Item icon={Store} label="Vendor" value={(params.vendor as string) ?? '—'} />
           </dl>
           <p className="mt-3 text-xs text-muted">
             <span className="text-faint">Reasoning: </span>
-            {proposal.reasoning}
+            {proposal.reasoning || 'Not provided.'}
           </p>
           <div className="mt-3">
             <p className="label mb-1">Evidence references</p>

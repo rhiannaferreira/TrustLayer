@@ -11,6 +11,7 @@ import { Modal } from '@/components/ui/Overlay';
 import { JsonView } from '@/components/ui/JsonView';
 import { errorMessage } from '@/components/ui/ErrorBanner';
 import { PolicyEditor } from '@/components/policies/PolicyEditor';
+import { LivePoliciesPage } from '@/components/policies/LivePolicies';
 import { formatCurrency, formatDateTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import type { AnyPolicy, PolicyKind, PolicyPatch } from '@/types';
@@ -39,6 +40,11 @@ function summarize(p: AnyPolicy): string {
 }
 
 export function PoliciesPage() {
+  const { dataSource } = useAppStore();
+  return dataSource === 'api' ? <LivePoliciesPage /> : <DemoPoliciesPage />;
+}
+
+function DemoPoliciesPage() {
   const { policySet, updatePolicy, resetPolicies, dataSource } = useAppStore();
   const { notify } = useToast();
   const [selectedId, setSelectedId] = useState(policySet.policies[0]?.id);
@@ -79,7 +85,7 @@ export function PoliciesPage() {
       <PageHeader
         eyebrow={<Badge tone="accent">Policies</Badge>}
         title="Rules every agent action must pass"
-        description="Deterministic policies are enforced before any tool call. Changes apply to the very next evaluation."
+        description="Demo Mode policies, enforced by the simulated engine before any tool call. Changes apply to the very next evaluation."
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={() => setJsonOpen(true)}>

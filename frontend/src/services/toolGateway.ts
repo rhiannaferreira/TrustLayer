@@ -45,6 +45,10 @@ export function authorizeExecution(record: Pick<EvaluationRecord, 'response' | '
 export function submitToGateway(record: EvaluationRecord, now = new Date()): ExecutionResult {
   const verdict = authorizeExecution(record);
   const at = now.toISOString();
+  if (record.execution?.status === 'EXECUTED') {
+    // Mirrors the backend's HTTP 409: an authorization can be used once.
+    return { status: 'REFUSED', duplicate: true, at, gateway: GATEWAY_NAME, message: 'Refused: this authorization was already used. Duplicate execution prevented.' };
+  }
   if (!verdict.allowed) {
     return { status: 'REFUSED', at, gateway: GATEWAY_NAME, message: verdict.reason };
   }
