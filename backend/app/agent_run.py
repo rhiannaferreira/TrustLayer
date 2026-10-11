@@ -13,6 +13,7 @@ from .discovery import discover, exclusion_reason
 from .providers import listing_evidence
 from .ranking import rank_products
 from .schemas import EvaluationRequest
+from .web_search import WebSearchUnavailable, research, web_search_status
 
 
 class AgentRunRequest(BaseModel):
@@ -52,9 +53,17 @@ async def run_workflow(
     """Discover, rank, then evaluate; only the independent gateway may execute later."""
     discovery = await discover(request.intent)
     base = {"discovery": discovery, "ranking": None, "recommendation": None, "alternatives": [],
-            "proposal": None, "evaluation": None, "execution": None}
+            "proposal": None, "evaluation": None, "execution": None, "research": None}
     if discovery["status"] == "NO_MATCH":
-        return {"status": "NO_MATCH", "message": discovery["no_match"]["message"], **base}
+        # Not a product request the catalog can serve: answer from the web instead, clearly labeled.
+        # Nothing is proposed, evaluated or executed on the basis of web results.
+        found = None
+        if web_search_status()["configured"]:
+            try:
+                found = await research(request.intent)
+            except WebSearchUnavailable as exc:
+                found = {"error": str(exc), "sources": [], "answer": None}
+        return {"status": "NO_MATCH", "message": discovery["no_match"]["message"], **base, "research": found}
 
     candidates = discovery["results"]
     by_id = {c["product_id"]: c for c in candidates}

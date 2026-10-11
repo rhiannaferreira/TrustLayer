@@ -55,3 +55,22 @@ def test_provider_error_is_503(client, monkeypatch):
     r = client.post("/api/v1/research", json={"query": "anything at all"})
     assert r.status_code == 503
     assert "429" in r.json()["detail"]["message"]
+
+
+def test_agent_run_no_match_falls_back_to_labeled_web_research(client, monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-not-real")
+    mock_tavily(monkeypatch, payload={"answer": "Frank Herbert.", "results": [
+        {"title": "Dune", "url": "https://example.org/dune", "content": "A 1965 novel.", "score": 0.8}]})
+    r = client.post("/api/v1/agent/run", json={"intent": "who wrote the novel Dune"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "NO_MATCH"
+    assert body["proposal"] is None and body["evaluation"] is None
+    assert body["research"]["answer"] == "Frank Herbert."
+    assert body["research"]["sources"][0]["provenance"] == "web_search"
+
+
+def test_agent_run_no_match_without_tavily_key_has_no_research(client):
+    r = client.post("/api/v1/agent/run", json={"intent": "who wrote the novel Dune"})
+    assert r.status_code == 200
+    assert r.json()["research"] is None
