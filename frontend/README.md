@@ -134,5 +134,6 @@ src/
 | `/investigate` | Decision Investigation (`?id=<evaluation_id>&replay=1`) |
 | `/attack-lab` | Attack Lab (original vs. modified comparison) |
 | `/demo` | Guided demo (full screen, 5 scenes) |
+| `/test-console` | Test Console: runs a pass/fail suite (decisions, gateway 403/409, review, AI status) against the active backend, plus a raw request sender |
 | `/policies` | Policies |
 | `/audit` | Audit Trail (`/audit?id=<evaluation_id>` opens a record) |

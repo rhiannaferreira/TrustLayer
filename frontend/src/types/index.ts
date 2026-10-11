@@ -243,7 +243,7 @@ export interface Product {
 // ---------------------------------------------------------------------------
 
 export type DataSource = 'mock' | 'api';
-export type RecordOrigin = 'playground' | 'attack-lab' | 'seed' | 'remote' | 'demo';
+export type RecordOrigin = 'playground' | 'attack-lab' | 'seed' | 'remote' | 'demo' | 'test';
 
 export type ReviewStatus = 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
