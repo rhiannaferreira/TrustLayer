@@ -60,7 +60,7 @@ for the backend are in **[BACKEND_REQUESTS.md](./BACKEND_REQUESTS.md)**.
 
 ## Deploying to Vercel
 
-Import the GitHub repo in Vercel, pick the `frontend` branch, and set **Root Directory** to `frontend`
+Import the GitHub repo in Vercel, use the `main` branch, and set **Root Directory** to `frontend`
 (the Vite preset and `vercel.json` handle the rest, including client-side routes like `/demo`).
 Out of the box the deployed site runs in Demo Mode and needs no backend.
 
@@ -76,16 +76,26 @@ Vercel site's origin to the backend's `CORS_ORIGINS`. The dev proxy only exists 
    labelled seed records.
 2. **Overview** (`/`): what TrustLayer is, live metrics, activity and risk charts.
 3. **Agent Playground** (`/playground`): keep "Best under $80" and press **Run agent**. Watch the
-   six-stage pipeline, then the **APPROVE** decision and simulated checkout.
+   six-stage pipeline and the **APPROVE** decision, then press **Execute through gateway** for the
+   simulated checkout (approved actions are never executed automatically).
 4. Choose **Premium pick** and run again. The $129 order is **BLOCKED** by the spending policy.
    Press **Retry with alternative** to create a new proposal and a new evaluation.
 5. **Attack Lab** (`/attack-lab`): pick **Prompt injection** and run it. The malicious review is
    highlighted, the action is held for review, and the gateway refuses to execute. Edit the evidence
-   text or price and run again to see the decision change ("Previous run → now").
+   text or price and press **Run modified**; the **What changed** panel compares the two runs.
 6. **Policies** (`/policies`): raise the limit to $150, then rerun the premium pick in the
    playground. It is now approved.
 7. **Audit Trail** (`/audit`): every run is there with checks, policy version, execution and review
    state. Open one for the JSON view, or **Export JSON**.
+
+**Presenting in Live Backend Mode** (same steps, with these differences):
+
+* Turn **AI analysis** off in the Playground unless Luminal is configured in `backend/.env`. With it on
+  and no AI configured, every evaluation is held for review, so step 3 shows REVIEW REQUIRED, not APPROVE.
+* The preset buttons also pick the matching seeded backend scenario (Premium pick → `budget`, and so on).
+* Step 6: open **Spending limit** on the Policies page, set `max_amount` to 150 and **Save to backend**.
+* Policy changes are stored in the backend database and **Reset demo does not undo them**. Before
+  presenting, set the limit back to 80 (or stop the backend and delete `backend/trustlayer.sqlite3`).
 
 ## What is real and what is simulated
 

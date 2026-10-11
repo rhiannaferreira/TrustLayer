@@ -214,9 +214,16 @@ export interface AppStoreValue {
 const AppStoreContext = createContext<AppStoreValue | null>(null);
 
 export function AppStoreProvider({ children, initialState }: { children: ReactNode; initialState?: AppState }) {
-  const [state, dispatch] = useReducer(reducer, undefined, () => initialState ?? loadState());
+  const [state, rawDispatch] = useReducer(reducer, undefined, () => initialState ?? loadState());
   const stateRef = useRef(state);
   stateRef.current = state;
+  // Apply each action to stateRef right away too, so calls made back to back (before React
+  // re-renders) see each other's writes. Without this, the Test Console's gateway cases read a
+  // stale record list and fail with "Unknown evaluation" or execute the same action twice.
+  const dispatch = useCallback((action: Action) => {
+    stateRef.current = reducer(stateRef.current, action);
+    rawDispatch(action);
+  }, []);
 
   useEffect(() => {
     try {
