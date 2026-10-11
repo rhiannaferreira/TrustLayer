@@ -10,7 +10,7 @@ from uuid import uuid4
 
 DEFAULT_POLICIES = [
     ("spending-limit", "Spending limit", {"max_amount": 80.0}),
-    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio"]}),
+    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio", "StrideMart", "PackWorks", "CompuHub"]}),
     ("allowed-actions", "Allowed tool actions", {"actions": ["place_order", "view_product"]}),
     ("evidence-review", "Review suspicious evidence", {"require_review_for_suspicious": True}),
     ("decision-quality", "Decision evidence quality", {"require_review_if_insufficient": False, "min_independent_sources": 1, "require_comparison_for_best": True, "require_cost_quote": True}),
@@ -22,12 +22,25 @@ def utc_now():
 
 
 def database_path():
-    return os.getenv("TRUSTLAYER_DB_PATH", str(Path(__file__).resolve().parent.parent / "trustlayer.sqlite3"))
+    configured = os.getenv("TRUSTLAYER_DB_PATH")
+    if configured:
+        return configured
+    if os.getenv("VERCEL"):
+        # Vercel functions only allow writes under /tmp; data resets on cold starts.
+        return "/tmp/trustlayer.sqlite3"
+    return str(Path(__file__).resolve().parent.parent / "trustlayer.sqlite3")
+
+
+_initialized = set()
 
 
 @contextmanager
 def connect():
-    conn = sqlite3.connect(database_path(), timeout=10)
+    path = database_path()
+    if path not in _initialized:
+        # Serverless hosts may skip the lifespan hook or start with an empty /tmp.
+        init_db()
+    conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -42,7 +55,9 @@ def connect():
 
 
 def init_db():
-    Path(database_path()).parent.mkdir(parents=True, exist_ok=True)
+    path = database_path()
+    _initialized.add(path)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         c.executescript("""
           CREATE TABLE IF NOT EXISTS policies (
@@ -59,6 +74,10 @@ def init_db():
             id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL UNIQUE,
             action_json TEXT NOT NULL, created_at TEXT NOT NULL,
             FOREIGN KEY(evaluation_id) REFERENCES evaluations(id)
+          );
+          CREATE TABLE IF NOT EXISTS product_listings (
+            product_id TEXT PRIMARY KEY, provider TEXT NOT NULL, search_id TEXT NOT NULL,
+            record_json TEXT NOT NULL, retrieved_at TEXT NOT NULL
           );
           CREATE TABLE IF NOT EXISTS audit_events (
             id TEXT PRIMARY KEY, evaluation_id TEXT, event_type TEXT NOT NULL,
@@ -131,3 +150,26 @@ def list_audit(limit=200):
         rows = c.execute("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{"id": r["id"], "evaluation_id": r["evaluation_id"], "event_type": r["event_type"],
              "details": json.loads(r["details_json"]), "created_at": r["created_at"]} for r in rows]
+
+
+def save_listings(search_id, records):
+    """Persist server-retrieved provider listings so later checks never rely on caller-supplied values."""
+    with connect() as c:
+        for r in records:
+            c.execute("INSERT OR REPLACE INTO product_listings VALUES (?, ?, ?, ?, ?)",
+                      (r["product_id"], r["provider"], search_id, json.dumps({**r, "search_id": search_id}),
+                       r["retrieved_at"]))
+
+
+def get_listing(product_id):
+    if not isinstance(product_id, str):
+        return None
+    with connect() as c:
+        row = c.execute("SELECT record_json FROM product_listings WHERE product_id=?", (product_id,)).fetchone()
+    return json.loads(row["record_json"]) if row else None
+
+
+def listings_for_search(search_id):
+    with connect() as c:
+        rows = c.execute("SELECT record_json FROM product_listings WHERE search_id=?", (search_id,)).fetchall()
+    return [json.loads(r["record_json"]) for r in rows]

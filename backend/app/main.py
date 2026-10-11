@@ -16,6 +16,12 @@ from .luminal import configured, investigate
 from .schemas import Action, EvaluationRequest, ExecutionRequest, PolicyPatch, ProposeRequest, ReviewDecision
 from .ai_agent import AIProposeRequest, generate_proposal
 from .agent_run import AgentRunRequest, run_workflow
+from .discovery import discover
+from .providers import ProviderUnavailable, search_config
+from .web_search import WebSearchUnavailable, research, web_search_status
+from .ranking import RankingRejected
+from .trust import AGENTS, SCENARIOS, TrustRequest, evaluate_trust
+from pydantic import BaseModel, Field
 load_dotenv()
 
 
@@ -27,15 +33,67 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TrustLayer API", version="0.1.0", lifespan=lifespan,
               description="Hackathon prototype: deterministic agent authorization and simulated execution")
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://trust-layer-henna.vercel.app"
+origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
+# Optional regex for preview deployments, e.g. https://trust-layer-.*\.vercel\.app
+origin_regex = os.getenv("CORS_ORIGIN_REGEX") or None
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_origin_regex=origin_regex, allow_credentials=False,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["*"])
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "local-demo"}
+            "mode": "vercel" if os.getenv("VERCEL") else "local-demo", "product_search": product_search_status(),
+            "web_search": web_search_status()}
+
+
+def product_search_status():
+    cfg = search_config()
+    return {"provider": cfg["provider"], "live": cfg["live"], "configured": cfg["configured"],
+            "missing": cfg["missing"], "demo_fallback": cfg["demo_fallback"]}
+
+
+class ProductSearchRequest(BaseModel):
+    intent: str = Field(min_length=3, max_length=2000)
+
+
+def provider_unavailable(exc: ProviderUnavailable) -> HTTPException:
+    return HTTPException(503, {"code": "PRODUCT_SEARCH_UNAVAILABLE", "message": str(exc),
+                               "provider": search_config()["provider"]})
+
+
+@app.get("/api/v1/products/status")
+def products_status():
+    return product_search_status()
+
+
+@app.post("/api/v1/products/search")
+async def product_search(request: ProductSearchRequest):
+    """Category-aware search only. Proposes nothing and evaluates nothing."""
+    try:
+        return await discover(request.intent)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
+
+
+class ResearchRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+@app.get("/api/v1/research/status")
+def research_status():
+    return web_search_status()
+
+
+@app.post("/api/v1/research")
+async def web_research(request: ResearchRequest):
+    """General web research for any topic. Returns labeled, unverified sources; proposes nothing."""
+    try:
+        return await research(request.query, max_results=request.max_results)
+    except WebSearchUnavailable as exc:
+        raise HTTPException(503, {"code": "WEB_SEARCH_UNAVAILABLE", "message": str(exc), "provider": "tavily"}) from exc
 
 
 @app.get("/api/v1/catalog")
@@ -130,11 +188,15 @@ async def create_evaluation(request: EvaluationRequest):
     return result
 @app.post("/api/v1/agent/run")
 async def run_agent(request: AgentRunRequest):
-    return await run_workflow(
-        request,
-        propose_fn=generate_proposal,
-        evaluate_fn=create_evaluation,
-    )
+    """Discover → rank → propose → evaluate. Never executes; see /api/v1/actions/execute."""
+    vendors = next(p for p in db.list_policies() if p["id"] == "approved-vendors")["config"]["vendors"]
+    try:
+        return await run_workflow(request, evaluate_fn=create_evaluation, approved_vendors=vendors)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
+    except RankingRejected as exc:
+        db.add_audit("AI_PROPOSAL_REJECTED", details={"intent": request.intent[:500], "reason": str(exc)})
+        raise HTTPException(502, str(exc)) from exc
 
 @app.get("/api/v1/evaluations")
 def list_evaluations(limit: int = Query(100, ge=1, le=500)):
@@ -218,3 +280,33 @@ def audit_events(limit: int = Query(200, ge=1, le=500)):
 def ai_status():
     return {"provider": "luminal", "configured": configured(),
             "mode": "optional_advisory_only", "model": os.getenv("LUMINAL_MODEL") if configured() else None}
+
+
+@app.get("/api/v1/trust/agents")
+def trust_agents():
+    return [{"id": k, **{f: v[f] for f in ("name", "domain", "scopes", "limits")}} for k, v in AGENTS.items()]
+
+
+@app.get("/api/v1/trust/scenarios")
+def trust_scenarios():
+    return SCENARIOS
+
+
+@app.post("/api/v1/trust/evaluate")
+async def trust_evaluate(request: TrustRequest):
+    """General-purpose gate: any agent proposes any registered action; TrustLayer decides. Never executes."""
+    ai_analysis = ai_error = None
+    if request.use_ai:
+        try:
+            ai_analysis = await investigate(request.goal, {"action": request.action, "parameters": request.parameters},
+                                            [e.model_dump() for e in request.evidence])
+        except Exception as ex:
+            ai_error = f"AI analysis unavailable ({type(ex).__name__})"
+    result = evaluate_trust(request, ai_analysis, ai_error)
+    db.add_audit("TRUST_DECISION", result["evaluation_id"], result)
+    return result
+
+
+@app.get("/api/v1/trust/decisions")
+def trust_decisions(limit: int = Query(50, ge=1, le=200)):
+    return [e["details"] for e in db.list_audit(500) if e["event_type"] == "TRUST_DECISION"][:limit]
