@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from . import db
 from .catalog import PRODUCTS
@@ -33,6 +34,34 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TrustLayer API", version="0.1.0", lifespan=lifespan,
               description="Hackathon prototype: deterministic agent authorization and simulated execution")
+
+
+class WorkspaceMiddleware:
+    """Scope every request to the caller's sandbox, named by the X-TrustLayer-Workspace header."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        raw = dict(scope["headers"]).get(b"x-trustlayer-workspace")
+        workspace_id = db.DEFAULT_WORKSPACE
+        if raw is not None:
+            workspace_id = raw.decode("latin-1").strip()
+            if not db.valid_workspace(workspace_id):
+                response = JSONResponse({"detail": "X-TrustLayer-Workspace must be 8-64 letters, digits, - or _"},
+                                        status_code=400)
+                return await response(scope, receive, send)
+        token = db.use_workspace(workspace_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            db.reset_workspace(token)
+
+
+# Added before CORS so CORS stays outermost and its headers reach every response, including a 400 above.
+app.add_middleware(WorkspaceMiddleware)
 DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://trust-layer-henna.vercel.app"
 origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
 # Optional regex for preview deployments, e.g. https://trust-layer-.*\.vercel\.app
@@ -125,6 +154,11 @@ def evidence_fixtures(product_id: str | None = None):
     return list_demo_fixtures(product_id)
 
 
+@app.get("/api/v1/workspace")
+def workspace():
+    return {"workspace_id": db.current_workspace(), "shared": db.current_workspace() == db.DEFAULT_WORKSPACE}
+
+
 @app.get("/api/v1/policies")
 def policies():
     return db.list_policies()
@@ -154,9 +188,11 @@ def validate_policy(pid: str, config: dict):
 
 @app.patch("/api/v1/policies/{policy_id}")
 def patch_policy(policy_id: str, patch: PolicyPatch):
+    workspace_id = db.current_workspace()
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM policies WHERE id=?", (policy_id,)).fetchone()
+        db.seed_policies(c, workspace_id)
+        row = c.execute("SELECT * FROM policies WHERE workspace_id=? AND id=?", (workspace_id, policy_id)).fetchone()
         if not row:
             raise HTTPException(404, "Policy not found")
         current = json.loads(row["config_json"])
@@ -164,8 +200,8 @@ def patch_policy(policy_id: str, patch: PolicyPatch):
         validate_policy(policy_id, updated)
         enabled = bool(row["enabled"]) if patch.enabled is None else patch.enabled
         version = row["version"] + 1
-        c.execute("UPDATE policies SET config_json=?, enabled=?, version=?, updated_at=? WHERE id=?",
-                  (json.dumps(updated), int(enabled), version, db.utc_now(), policy_id))
+        c.execute("UPDATE policies SET config_json=?, enabled=?, version=?, updated_at=? WHERE workspace_id=? AND id=?",
+                  (json.dumps(updated), int(enabled), version, db.utc_now(), workspace_id, policy_id))
         db.add_audit("POLICY_UPDATED", details={"policy_id": policy_id, "version": version}, conn=c)
     return next(p for p in db.list_policies() if p["id"] == policy_id)
 
@@ -216,7 +252,8 @@ def record_review(evaluation_id: str, payload: ReviewDecision):
     # Local hackathon only: this endpoint has NO authenticated reviewer identity.
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT result_json, review_status FROM evaluations WHERE id=?", (evaluation_id,)).fetchone()
+        row = c.execute("SELECT result_json, review_status FROM evaluations WHERE id=? AND workspace_id=?",
+                        (evaluation_id, db.current_workspace())).fetchone()
         if not row:
             raise HTTPException(404, "Evaluation not found")
         result = json.loads(row["result_json"])
@@ -224,7 +261,8 @@ def record_review(evaluation_id: str, payload: ReviewDecision):
             raise HTTPException(409, "Only REVIEW_REQUIRED evaluations are eligible for human review")
         if row["review_status"]:
             raise HTTPException(409, "Evaluation was already reviewed")
-        c.execute("UPDATE evaluations SET review_status=? WHERE id=?", (payload.decision, evaluation_id))
+        c.execute("UPDATE evaluations SET review_status=? WHERE id=? AND workspace_id=?",
+                  (payload.decision, evaluation_id, db.current_workspace()))
         db.add_audit("HUMAN_REVIEW", evaluation_id, {"reviewer": payload.reviewer,
                                                         "decision": payload.decision}, conn=c)
     return {"evaluation_id": evaluation_id, "review_status": payload.decision,
@@ -236,7 +274,8 @@ def execute(request: ExecutionRequest):
     """Single-use server-side authorization for a simulated checkout. Never buys anything."""
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM evaluations WHERE id=?", (request.evaluation_id,)).fetchone()
+        row = c.execute("SELECT * FROM evaluations WHERE id=? AND workspace_id=?",
+                        (request.evaluation_id, db.current_workspace())).fetchone()
         if not row:
             raise HTTPException(404, "Evaluation not found")
         original = json.loads(row["request_json"])
