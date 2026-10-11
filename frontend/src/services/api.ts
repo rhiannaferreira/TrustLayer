@@ -139,6 +139,8 @@ export function createHttpClient(baseUrl: string) {
     async health(): Promise<HealthStatus> {
       const started = performance.now();
       const body = await request(ENDPOINTS.health, { method: 'GET' }, undefined, 4_000);
+      // A static host's SPA fallback answers /health with index.html (HTTP 200); that is not a backend.
+      if (typeof body === 'string') throw new ApiError('/health returned a web page, not JSON: no backend is serving this address', ENDPOINTS.health);
       return { ok: true, latency_ms: Math.round(performance.now() - started), body };
     },
 
