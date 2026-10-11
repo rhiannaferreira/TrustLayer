@@ -48,6 +48,7 @@ export function PlaygroundPage() {
   const live = dataSource === 'api';
 
   const [goal, setGoal] = useState(initial.goal);
+  const [liveScenario, setLiveScenario] = useState('valid');
   const [activity, setActivity] = useState<string[]>([]);
   const [proposal, setProposal] = useState<AgentProposal | null>(null);
   const [proposalSource, setProposalSource] = useState<'backend-seeded' | 'demo-planner' | null>(null);
@@ -151,7 +152,7 @@ export function PlaygroundPage() {
       if (!live) return { plan: planFromGoal(goal), source: 'demo-planner' as const, trace: [] };
       const trace: ApiExchange[] = [];
       try {
-        const p = await proposeLive(goal, trace);
+        const p = await proposeLive(goal, liveScenario, trace);
         const plan: AgentProposal = {
           path: 'budget',
           reasoning: p.reasoning,
@@ -252,7 +253,7 @@ export function PlaygroundPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.05fr)]">
         <Panel title="AI agent" subtitle={live ? 'Backend agent (seeded scenarios)' : 'Rule-based demo planner'} icon={<Bot className="h-3.5 w-3.5" />}>
-          <AgentPanel goal={goal} onGoalChange={setGoal} onRun={onRun} onStop={onStop} running={running} activity={activity} proposal={proposal} live={live} />
+          <AgentPanel goal={goal} onGoalChange={setGoal} onRun={onRun} onStop={onStop} running={running} activity={activity} proposal={proposal} live={live} scenario={liveScenario} onScenarioChange={setLiveScenario} />
         </Panel>
 
         <Panel

@@ -158,8 +158,8 @@ export function createHttpClient(baseUrl: string) {
     },
 
     /** Ask the backend agent for a proposal. The current backend answers from seeded scenarios. */
-    async propose(input: { agent_id: string; intent: string; policy_id: string }, trace?: Trace): Promise<LiveProposal> {
-      const body = await request(ENDPOINTS.agentPropose, { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent } }, trace);
+    async propose(input: { agent_id: string; intent: string; policy_id: string; scenario?: string }, trace?: Trace): Promise<LiveProposal> {
+      const body = await request(ENDPOINTS.agentPropose, { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent, ...(input.scenario ? { scenario: input.scenario } : {}) } }, trace);
       return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentPropose, trace);
     },
 
@@ -199,8 +199,8 @@ export function createHttpClient(baseUrl: string) {
     },
 
     /** Record a human reviewer's decision for a REVIEW_REQUIRED evaluation. */
-    async reviewDecision(evaluationId: string, decision: ReviewOutcome, note: string | undefined, trace?: Trace): Promise<unknown> {
-      return request(ENDPOINTS.reviewDecision(evaluationId), { method: 'POST', body: { decision, reviewer: 'trustlayer-console', note } }, trace);
+    async reviewDecision(evaluationId: string, decision: ReviewOutcome, _note: string | undefined, trace?: Trace): Promise<unknown> {
+      return request(ENDPOINTS.reviewDecision(evaluationId), { method: 'POST', body: { decision: decision === 'APPROVED' ? 'APPROVE' : 'REJECT', reviewer: 'trustlayer-console' } }, trace);
     },
 
     /**
@@ -217,6 +217,10 @@ export function createHttpClient(baseUrl: string) {
         return { status: 'ERROR', at: at(), gateway: 'backend', message: err instanceof Error ? err.message : String(err) };
       }
       const detail = describeErrorDetail(res.body);
+      if (res.status === 409 && !/already been used/i.test(detail ?? '')) {
+        // 409 also means "policies changed" or "re-evaluation requires a new authorization".
+        return { status: 'REFUSED', http_status: 409, at: at(), gateway: 'backend', message: `Backend conflict (HTTP 409)${detail ? `: ${detail}` : ''}. Re-evaluate the action to get a new authorization.`, raw: res.body };
+      }
       if (res.status === 409) {
         return {
           status: 'REFUSED',

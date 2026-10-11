@@ -16,9 +16,11 @@ interface AgentPanelProps {
   activity: string[];
   proposal: AgentProposal | null;
   live?: boolean;
+  scenario?: string;
+  onScenarioChange?: (scenario: string) => void;
 }
 
-export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live }: AgentPanelProps) {
+export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activity, proposal, live, scenario, onScenarioChange }: AgentPanelProps) {
   const params = proposal?.request.action.parameters;
   return (
     <div className="space-y-4">
@@ -103,6 +105,17 @@ export function AgentPanel({ goal, onGoalChange, onRun, onStop, running, activit
             </ol>
           )}
         </div>
+        {live && onScenarioChange && (
+          <label className="mt-2 block text-xs text-muted">
+            Seeded backend scenario
+            <select className="input mt-1" value={scenario} onChange={(e) => onScenarioChange(e.target.value)}>
+              <option value="valid">valid: approved vendor, within budget</option>
+              <option value="budget">budget: exceeds the spending limit</option>
+              <option value="prompt_injection">prompt_injection: hostile review text</option>
+              <option value="unauthorized">unauthorized: action not permitted</option>
+            </select>
+          </label>
+        )}
         <p className="mt-1.5 text-2xs text-faint">
           {live ? 'Backend agent: POST /api/v1/agent/propose returns seeded demo scenarios. It is not free-form LLM planning.' : 'Demo agent: deterministic rule-based planner, not an LLM.'}
         </p>

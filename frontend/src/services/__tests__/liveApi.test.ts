@@ -71,7 +71,7 @@ describe('live HTTP client (mocked fetch)', () => {
 
   it('execute: 200 executed, 403 refused, 409 duplicate', async () => {
     let status = 200;
-    const calls = mockFetch(() => ({ status, body: status === 200 ? { execution_id: 'exe_1', message: 'ok' } : { detail: status === 409 ? 'already executed' : 'not authorized' } }));
+    const calls = mockFetch(() => ({ status, body: status === 200 ? { execution_id: 'exe_1', message: 'ok' } : { detail: status === 409 ? 'Evaluation authorization has already been used' : 'not authorized' } }));
     const api = createHttpClient('');
     const ok = await api.execute('ev_123', liveEval.action);
     expect(ok.status).toBe('EXECUTED');
@@ -81,6 +81,7 @@ describe('live HTTP client (mocked fetch)', () => {
     expect(forbidden).toMatchObject({ status: 'REFUSED', http_status: 403 });
     status = 409;
     const dup = await api.execute('ev_123', liveEval.action);
+    
     expect(dup).toMatchObject({ status: 'REFUSED', http_status: 409, duplicate: true });
     expect(dup.message).toMatch(/already used/);
   });
@@ -101,5 +102,28 @@ describe('AI status classification', () => {
     expect(classifyAiStatus('not_requested')).toBe('not_requested');
     expect(classifyAiStatus(undefined)).toBe('none');
     expect(classifyAiStatus('weird')).toBe('unknown');
+  });
+});
+
+describe('backend contract details (feature/backend)', () => {
+  it('sends APPROVE/REJECT for review decisions', async () => {
+    const calls = mockFetch(() => ({ status: 200, body: { evaluation_id: 'ev_1', review_status: 'APPROVE', execution_allowed: true } }));
+    await createHttpClient('').reviewDecision('ev_1', 'APPROVED', undefined);
+    expect(calls[0].url).toBe('/api/v1/reviews/ev_1/decision');
+    expect((calls[0].body as Record<string, unknown>).decision).toBe('APPROVE');
+  });
+
+  it('sends the seeded scenario to /agent/propose', async () => {
+    const calls = mockFetch(() => ({ status: 200, body: { agent_id: 'purchase-pilot', intent: 'x', action: { type: 'place_order', parameters: { product_id: 'hp-001', price: 129, vendor: 'AudioMart' } }, evidence: [], policy_id: 'shopping-default', scenario: 'budget' } }));
+    const p = await createHttpClient('').propose({ agent_id: 'purchase-pilot', intent: 'x', policy_id: 'shopping-default', scenario: 'budget' });
+    expect(calls[0].body).toEqual({ agent_id: 'purchase-pilot', intent: 'x', scenario: 'budget' });
+    expect(p.scenario).toBe('budget');
+  });
+
+  it('treats a 409 "policies changed" as a conflict, not a duplicate', async () => {
+    mockFetch(() => ({ status: 409, body: { detail: 'Policies changed after evaluation; reevaluate before execution' } }));
+    const r = await createHttpClient('').execute('ev_1', liveEval.action);
+    expect(r).toMatchObject({ status: 'REFUSED', http_status: 409 });
+    expect(r.duplicate).toBeUndefined();
   });
 });

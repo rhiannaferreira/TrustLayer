@@ -165,7 +165,7 @@ export function normalizeFlags(v: unknown, notes: string[], defaultOrigin: FlagO
     const matched = str(pick(f, ['matched_text', 'match', 'text', 'snippet', 'excerpt', 'pattern_match']));
     return {
       evidence_id: str(pick(f, ['evidence_id', 'evidence', 'id', 'source_id'])) ?? '',
-      type: str(pick(f, ['type', 'flag', 'category', 'pattern', 'kind'])) ?? 'flag',
+      type: str(pick(f, ['type', 'rule', 'flag', 'category', 'pattern', 'kind'])) ?? 'flag',
       severity: normalizeSeverity(pick(f, ['severity', 'level', 'risk'])),
       description: str(pick(f, ['description', 'reason', 'message', 'detail', 'label'])) ?? str(f.type) ?? 'Flagged evidence',
       matched_text: matched,
@@ -297,7 +297,7 @@ export function normalizeEvaluation(raw: unknown, fallbackRequest?: EvaluationRe
   // Rebuild the request from a history item when the original is not known locally.
   let request: EvaluationRequest | undefined;
   let reconstructed = false;
-  const embedded = isObj(v.request) ? v.request : undefined;
+  const embedded = isObj(v.request) ? v.request : isObj(v.original_request) ? v.original_request : undefined;
   if (embedded && normalizeAction(embedded.action)) {
     request = {
       agent_id: str(embedded.agent_id) ?? response.agent_id ?? 'unknown-agent',

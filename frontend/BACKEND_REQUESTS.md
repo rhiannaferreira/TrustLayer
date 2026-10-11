@@ -1,40 +1,24 @@
-# Requests and open questions for the backend
+# Requests for the backend
 
-The frontend was built from the described contract without access to the backend code or its
-OpenAPI spec. Each item below is either an assumption the frontend makes (please confirm or
-correct) or something the UI would use if the backend provided it. The connection popover's
-OpenAPI check will show mismatches once the backend is running.
+Checked against `feature/backend` (read only). The frontend has been adjusted to the backend's real
+contract (APPROVE/REJECT, `scenario` on propose, `config` patches, execute 409 variants). What is
+still missing or unclear:
 
-## Assumptions to confirm
-
-1. **Review decision body.** Sent as `{ "decision": "APPROVED" | "REJECTED", "reviewer": "trustlayer-console", "note" }`.
-   Please confirm field names and accepted values.
-2. **Agent proposal body.** Sent as `{ "agent_id", "intent" }`. Please confirm, and confirm the
-   response shape (full evaluation request, or `{ action, evidence }`).
-3. **Execute response (200).** The frontend reads `execution_id` / `order_id` / `reference` and
-   `message`. Please confirm the field names.
-4. **403 vs 409.** 403 = not authorized, 409 = authorization already used. Please confirm no
-   other status codes are used for these cases.
-5. **Policy schema.** The editor is generic; a documented schema per policy (and which fields are
-   editable) would allow validation and better labels.
-6. **List envelopes.** `GET /evaluations` and `GET /audit-events` accept a bare array or
-   `{ "items": [...] }`. Please confirm which.
-
-## Missing contracts the UI would use
-
-1. **Escalate to human review.** There is no endpoint to move an ALLOW/BLOCK evaluation into
-   review, so "Request human review" is disabled in Live Backend Mode.
-2. **Agent permissions / context.** The evaluation request has no field for agent permissions or
-   reasoning, so they are not sent and tool authorization cannot be checked server-side from the
-   UI's agent profile. Suggest an optional `context: { permissions: [], reasoning }`.
-3. **Per-stage check identifier.** The investigation graph maps checks to its 8 stages by name.
-   An explicit `checks[].stage` (proposal, tool, product, spending, vendor, evidence, decision,
-   execution) would remove the guesswork.
-4. **Evidence flag origin.** Please add `evidence_flags[].origin`: `deterministic` | `ai` | `policy`,
-   so the Attack Lab can separate deterministic detection from AI findings without inference.
-5. **`ai_analysis` schema.** Currently shown as a summary plus raw JSON. A stable shape
-   (e.g. `{ summary, risk, findings: [{ title, severity, evidence_id }] }`) would allow richer display.
-6. **Per-stage timings.** The replay never invents timings; if the backend recorded them
-   (`checks[].duration_ms`) the investigation view could show them.
-7. **Execution record on the evaluation.** `executed` is a boolean; an execution reference and
-   timestamp on `GET /evaluations/{id}` would let history show executions done in other sessions.
+1. **Review and execution state on reads.** `GET /api/v1/evaluations` and `/{id}` always return
+   `review_status: null` and `executed: false`. Please return the stored `review_status` and an
+   `executed` flag (plus execution_id) so history is correct after a reload or from another browser.
+2. **Request on list.** `GET /api/v1/evaluations` omits the original request (intent, evidence). Including
+   `original_request` (as the detail endpoint does) would avoid reconstructed history rows.
+3. **Escalate to review.** No endpoint moves an ALLOW/BLOCK evaluation into review; the button is disabled in Live mode.
+4. **Agent permissions.** The evaluation request has no permissions/context field, so the UI cannot show tool
+   authorization against the agent's own permission list.
+5. **Stage identifier on checks.** An optional `checks[].stage` would replace name matching in the investigation graph.
+6. **Flag origin.** `evidence_flags[].origin` (`deterministic` | `ai` | `policy`). Today all flags are deterministic regex
+   hits; AI findings exist only as the free text in `ai_analysis`.
+7. **`ai_analysis` structure.** It is a plain string; a structured `{ summary, findings[] }` would allow per-finding display.
+8. **Audit events** carry no `decision`/`risk_level`; adding them to evaluation events would fill those columns.
+9. **`ai_status`** reads `error` when Luminal is not configured and `use_ai` is true. A distinct `unavailable`/`not_configured`
+   would let the UI distinguish "not set up" from "request failed".
+10. **409 bodies.** Execute returns 409 for both "already used" and "policies changed". The UI tells them apart by message text;
+    a machine-readable `code` would be more robust.
+11. **Review note.** `ReviewDecision` has no `note`; the UI no longer sends one.

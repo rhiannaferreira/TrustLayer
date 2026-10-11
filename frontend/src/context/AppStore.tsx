@@ -201,7 +201,7 @@ export interface AppStoreValue {
   loadLivePolicies: () => Promise<LivePolicy[]>;
   patchLivePolicy: (id: string, patch: Record<string, unknown>) => Promise<void>;
   loadCatalog: () => Promise<Product[]>;
-  proposeLive: (intent: string, trace: Trace) => Promise<LiveProposal>;
+  proposeLive: (intent: string, scenario: string, trace: Trace) => Promise<LiveProposal>;
   setSettings: (settings: Partial<Settings>) => void;
   resetDemo: () => void;
 }
@@ -438,7 +438,7 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
   }, [http]);
 
   const proposeLive = useCallback(
-    (intent: string, trace: Trace) => http.propose({ agent_id: 'purchase-pilot', intent, policy_id: POLICY_SET_ID }, trace),
+    (intent: string, scenario: string, trace: Trace) => http.propose({ agent_id: 'purchase-pilot', intent, scenario, policy_id: POLICY_SET_ID }, trace),
     [http],
   );
 

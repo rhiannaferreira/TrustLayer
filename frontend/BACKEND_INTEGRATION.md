@@ -5,9 +5,10 @@ HTTP client is `src/services/api.ts`, and all response normalization is in
 `src/services/liveContract.ts`. Questions and gaps for the backend are listed in
 [BACKEND_REQUESTS.md](./BACKEND_REQUESTS.md).
 
-> Status: built against the contract described by the team. No backend source or OpenAPI spec was
-> available, so live behaviour was tested only against mocked HTTP (`src/services/__tests__/liveApi.test.ts`).
-> At runtime the frontend fetches `/openapi.json` and reports any differences in the connection popover.
+> Status: reconciled with the backend code on `feature/backend` (read only, `backend/app/main.py`,
+> `schemas.py`, `engine.py`). Verified by reading the code and by mocked-HTTP tests; the two have
+> **not** yet been run together against a live server. At runtime the frontend also fetches
+> `/openapi.json` and reports differences in the connection popover.
 
 ## 1. Configuration
 
@@ -93,7 +94,8 @@ Body: `{ "evaluation_id": "...", "action": <response.action, or the exact action
 | --- | --- |
 | 200 | Executed (simulated); `execution_id`/`order_id`/`reference` and `message` shown. `executed:false` or `success:false` in a 200 is shown as refused. |
 | 403 | Refused: not authorized, with `detail` |
-| 409 | Duplicate refused: authorization already used. An earlier successful execution is kept. |
+| 409 "already been used" | Duplicate refused. An earlier successful execution is kept. |
+| 409 other | Conflict, e.g. "Policies changed after evaluation": shown as refused, not as a duplicate; re-evaluate. |
 | other | Error with status and `detail` |
 
 The UI only enables "Execute" when `execution_allowed` is true (or review approved), but the
@@ -103,28 +105,31 @@ blocked evaluation so the server's 403 can be demonstrated. Nothing auto-execute
 
 ## 5. Reviews: `POST /api/v1/reviews/{evaluation_id}/decision`
 
-Body sent: `{ "decision": "APPROVED" | "REJECTED", "reviewer": "trustlayer-console", "note": "..." }`.
-After success the evaluation is re-fetched and `review_status` from the backend is shown.
+Body sent: `{ "decision": "APPROVE" | "REJECT", "reviewer": "trustlayer-console" }` (backend schema `ReviewDecision`).
+The response `{ evaluation_id, review_status, execution_allowed }` is shown. The backend returns 409 for
+non-REVIEW_REQUIRED or already-reviewed evaluations. `GET /evaluations` does not expose the review
+result, so the UI keeps the review status it recorded from this response.
 
 ## 6. Agent proposals: `POST /api/v1/agent/propose`
 
-Body sent: `{ "agent_id": "...", "intent": "..." }`. The response is read as either a full
-evaluation request or `{ action, evidence, reasoning?, scenario? }`; it is then submitted to
-`POST /api/v1/evaluations`.
+Body sent: `{ "agent_id", "intent", "scenario" }` where scenario is `valid | budget | prompt_injection | unauthorized`
+(chosen in the Playground in Live mode; the backend defaults to `valid`). The response
+(`action`, `evidence`, `policy_id`, `proposal_source: "seeded_demo_scenario"`) is then submitted to
+`POST /api/v1/evaluations`. `/agent/propose-ai` and `/agent/run` exist on the backend but are not used yet.
 
 ## 7. Policies
 
-`GET /api/v1/policies` accepts an array or `{ items | policies: [...] }` or an object keyed by id.
-The editor is generated from the returned JSON (booleans, numbers, strings, string lists, one
-nested level). `PATCH /api/v1/policies/{policy_id}` sends only changed fields (a changed nested
-field sends its whole parent object). The list is reloaded after PATCH; the UI shows only what
+Backend policy shape: `{ id, name, enabled, config, version, updated_at }` with ids `spending-limit`,
+`approved-vendors`, `allowed-actions`, `evidence-review`. The editor is generated from the returned
+JSON (`enabled` plus fields inside `config`). `PATCH /api/v1/policies/{policy_id}` accepts
+`{ enabled?, config? }`; the frontend sends only changed fields (a changed `config` field sends the whole
+`config` object). Every PATCH bumps `version`; evaluations made before it return 409 on execute. The list is reloaded after PATCH; the UI shows only what
 the backend confirms.
 
 ## 8. Audit events
 
 `GET /api/v1/audit-events` accepts an array or `{ items | events | audit_events: [...] }`. Each event
-reads `evaluation_id`, `event_type`/`type`, `decision`, `risk_level`, `created_at`/`timestamp`
-(decision and risk may be null). Raw event JSON is kept.
+reads `evaluation_id`, `event_type`, `details`, `created_at` (the backend sends no decision or risk, so those show as empty). Raw event JSON is kept.
 
 ## 9. Testing
 
@@ -132,3 +137,16 @@ reads `evaluation_id`, `event_type`/`type`, `decision`, `risk_level`, `created_a
   422 detail, network failure, policy PATCH, AI status classification).
 - Against a real backend: start it on 127.0.0.1:8000, set `VITE_USE_MOCKS=false`, `npm run dev`,
   open the connection popover to see health, AI status and the OpenAPI comparison.
+
+## 10. Backend behaviours the UI relies on or works around
+
+- Check objects are `{ name, status, reason }`; flags are `{ evidence_id, rule, reason }`; `ai_analysis` is a plain string.
+- `ai_status` is `completed`, `error` or `not_requested`. Note: with `use_ai` and no Luminal config the
+  backend reports `error` plus `ai_error`, which the UI shows as "AI request failed".
+- Checks have no stage identifier; the investigation graph maps them by name
+  (Tool authorization, Trusted product reference, Spending limit, Vendor authorization, Evidence safety, AI evidence analysis).
+- `GET /evaluations` returns results only (no request), so history rows have a reconstructed request
+  (labelled); `GET /evaluations/{id}` adds `original_request`, which is used when present.
+- `executed` and `review_status` stay `false`/`null` in evaluation responses; execution and review state come from the
+  execute/review responses and are kept client-side.
+- CORS allows `localhost:5173` and `127.0.0.1:5173` only (set `CORS_ORIGINS` for others); the dev proxy avoids this entirely.
