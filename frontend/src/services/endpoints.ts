@@ -17,6 +17,8 @@ export const ENDPOINTS = {
   auditEvents: `${API_PREFIX}/audit-events`,
   aiStatus: `${API_PREFIX}/ai/status`,
   research: `${API_PREFIX}/research`,
+  trustScenarios: `${API_PREFIX}/trust/scenarios`,
+  trustEvaluate: `${API_PREFIX}/trust/evaluate`,
 } as const;
 
 /** Endpoints the frontend uses in Live Backend Mode, for the OpenAPI contract check. */

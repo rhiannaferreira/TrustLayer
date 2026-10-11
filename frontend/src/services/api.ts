@@ -56,6 +56,50 @@ export interface ResearchResult {
   retrieved_at: string;
 }
 
+export interface TrustCheck {
+  name: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  reason: string;
+}
+
+export interface TrustStage {
+  name: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  checks: TrustCheck[];
+}
+
+export interface TrustRequest {
+  agent_id: string;
+  goal: string;
+  action: string;
+  parameters: Record<string, unknown>;
+  reasoning?: string;
+  evidence?: Array<{ id: string; kind?: string; source?: string; content?: string; trusted?: boolean }>;
+  use_ai?: boolean;
+}
+
+export interface TrustScenario {
+  id: string;
+  domain: string;
+  title: string;
+  expected: 'ALLOW' | 'REVIEW' | 'BLOCK';
+  request: TrustRequest;
+}
+
+export interface TrustDecision {
+  evaluation_id: string;
+  agent_name: string | null;
+  domain: string | null;
+  action: string;
+  decision: 'ALLOW' | 'REVIEW' | 'BLOCK';
+  risk_score: number;
+  risk_level: string;
+  reason: string;
+  stages: TrustStage[];
+  ai_analysis: string | null;
+  created_at: string;
+}
+
 export interface HealthStatus {
   ok: boolean;
   latency_ms: number;
@@ -178,6 +222,19 @@ export function createHttpClient(baseUrl: string) {
         .filter((s): s is Record<string, unknown> => isObj(s) && typeof s.url === 'string' && typeof s.title === 'string')
         .map((s) => ({ id: String(s.id ?? s.url), title: s.title as string, url: s.url as string, snippet: typeof s.snippet === 'string' ? s.snippet : '' }));
       return { query, answer: typeof body.answer === 'string' ? body.answer : null, sources, retrieved_at: typeof body.retrieved_at === 'string' ? body.retrieved_at : '' };
+    },
+
+    async trustScenarios(trace?: Trace): Promise<TrustScenario[]> {
+      const body = await request(ENDPOINTS.trustScenarios, { method: 'GET' }, trace, 10_000);
+      if (!Array.isArray(body)) throw new ApiError('Scenario list has an unexpected shape', ENDPOINTS.trustScenarios, undefined, body);
+      return body as TrustScenario[];
+    },
+
+    /** Ask TrustLayer whether an agent's proposed action (any domain) may proceed. */
+    async trustEvaluate(req: TrustRequest, trace?: Trace): Promise<TrustDecision> {
+      const body = await request(ENDPOINTS.trustEvaluate, { method: 'POST', body: req }, trace, 30_000);
+      if (!isObj(body) || !Array.isArray(body.stages)) throw new ApiError('Decision has an unexpected shape', ENDPOINTS.trustEvaluate, undefined, body);
+      return body as unknown as TrustDecision;
     },
 
     async catalog(trace?: Trace): Promise<Product[]> {
