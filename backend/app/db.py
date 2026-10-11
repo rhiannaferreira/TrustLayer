@@ -22,12 +22,25 @@ def utc_now():
 
 
 def database_path():
-    return os.getenv("TRUSTLAYER_DB_PATH", str(Path(__file__).resolve().parent.parent / "trustlayer.sqlite3"))
+    configured = os.getenv("TRUSTLAYER_DB_PATH")
+    if configured:
+        return configured
+    if os.getenv("VERCEL"):
+        # Vercel functions only allow writes under /tmp; data resets on cold starts.
+        return "/tmp/trustlayer.sqlite3"
+    return str(Path(__file__).resolve().parent.parent / "trustlayer.sqlite3")
+
+
+_initialized = set()
 
 
 @contextmanager
 def connect():
-    conn = sqlite3.connect(database_path(), timeout=10)
+    path = database_path()
+    if path not in _initialized:
+        # Serverless hosts may skip the lifespan hook or start with an empty /tmp.
+        init_db()
+    conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -42,7 +55,9 @@ def connect():
 
 
 def init_db():
-    Path(database_path()).parent.mkdir(parents=True, exist_ok=True)
+    path = database_path()
+    _initialized.add(path)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         c.executescript("""
           CREATE TABLE IF NOT EXISTS policies (

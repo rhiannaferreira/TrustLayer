@@ -31,15 +31,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TrustLayer API", version="0.1.0", lifespan=lifespan,
               description="Hackathon prototype: deterministic agent authorization and simulated execution")
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://trust-layer-henna.vercel.app"
+origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
+# Optional regex for preview deployments, e.g. https://trust-layer-.*\.vercel\.app
+origin_regex = os.getenv("CORS_ORIGIN_REGEX") or None
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_origin_regex=origin_regex, allow_credentials=False,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["*"])
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "local-demo", "product_search": product_search_status()}
+            "mode": "vercel" if os.getenv("VERCEL") else "local-demo", "product_search": product_search_status()}
 
 
 def product_search_status():
