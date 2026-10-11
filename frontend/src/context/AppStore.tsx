@@ -130,7 +130,7 @@ function mergeRemote(existing: EvaluationRecord, incoming: EvaluationRecord): Ev
 }
 
 export function defaultSettings(): Settings {
-  return { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl, useAi: true, autoExecute: false };
+  return { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl, useAi: false, autoExecute: false };
 }
 
 export function freshState(settings?: Settings): AppState {

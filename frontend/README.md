@@ -68,6 +68,8 @@ For Live Backend Mode on a deployed site, host the FastAPI backend somewhere rea
 set `VITE_API_BASE_URL` to its URL (and `VITE_USE_MOCKS=false`) in the Vercel project settings, and add the
 Vercel site's origin to the backend's `CORS_ORIGINS`. The dev proxy only exists in `npm run dev`/`preview`.
 
+> AI analysis is **off by default**. With Luminal unconfigured, the backend downgrades an AI-requested evaluation to REVIEW_REQUIRED ("AI unavailable; review required"), so turn it on in Settings only when the backend reports Luminal as configured.
+
 ## Two-minute demo script
 
 1. **Reset demo** (sidebar, bottom) before presenting. This restores default policies and three
