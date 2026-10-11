@@ -35,7 +35,7 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=Fals
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "local-demo"}
+            "mode": "local-demo", "product_search_provider": os.getenv("PRODUCT_SEARCH_PROVIDER", "demo")}
 
 
 @app.get("/api/v1/catalog")

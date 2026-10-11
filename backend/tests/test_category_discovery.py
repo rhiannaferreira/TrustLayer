@@ -52,6 +52,7 @@ def test_shoe_alternatives_do_not_include_headphones(tmp_path, monkeypatch):
 
 
 def test_ai_rejects_wrong_category_choice(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRODUCT_SEARCH_PROVIDER", "demo")
     monkeypatch.setenv("TRUSTLAYER_DB_PATH", str(tmp_path / "wrong.sqlite"))
     monkeypatch.setenv("LUMINAL_API_KEY", "fake-testing-key")
     monkeypatch.setenv("LUMINAL_API_BASE_URL", "https://example.invalid/v1")

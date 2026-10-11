@@ -6,7 +6,8 @@ from uuid import uuid4
 from .catalog import PRODUCTS, alternatives
 from .discovery import category_from_intent, budget_from_intent, matches_request
 from .quality import assess_quality
-from .db import utc_now
+from .db import utc_now, get_live_product
+from .retail import parse_search, title_matches
 
 SUSPICIOUS = [
     ("instruction_override", re.compile(r"\b(ignore|disregard|override|bypass)\b.{0,90}\b(instructions|rules|policy|limit|budget)\b", re.I | re.S)),
@@ -35,10 +36,19 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
     allowed_vendors = ps["approved-vendors"]["config"]["vendors"]
     product_id = parameters.get("product_id")
     if action.type == "place_order":
-        product = PRODUCTS.get(product_id)
+        live_product = get_live_product(product_id) if isinstance(product_id, str) and product_id.startswith(("ebay:", "serper:")) else None
+        product = PRODUCTS.get(product_id) or live_product
         requested_category = category_from_intent(request.intent)
         requested_budget, budget_is_strict = budget_from_intent(request.intent)
-        if requested_category is not None or requested_budget is not None:
+        if live_product is not None:
+            q = parse_search(request.intent)
+            cap, strict = q["max_price"], q["strict_price"]
+            aligned = (title_matches(live_product["title"], q)
+                       and (cap is None or (live_product["price"] < cap if strict else live_product["price"] <= cap)))
+            check("Request alignment", "PASS" if aligned else "FAIL",
+                  "Live listing title and price match search constraints" if aligned
+                  else "Live listing does not meet the requested item or budget")
+        elif requested_category is not None or requested_budget is not None:
             aligned = bool(product and matches_request(request.intent, product))
             check("Request alignment", "PASS" if aligned else "FAIL",
                   "Product matches requested category and price" if aligned
@@ -50,7 +60,15 @@ def evaluate(request, policies, ai_analysis=None, ai_error=None):
             price_matches = type(given_price) in (int, float) and math.isfinite(given_price) and abs(float(given_price)-product["price"]) < 0.001
             vendor_matches = given_vendor == product["vendor"]
             check("Trusted product reference", "PASS" if price_matches and vendor_matches else "FAIL",
-                  "Matches verified demo catalog" if price_matches and vendor_matches else "Submitted price or vendor conflicts with trusted catalog")
+                  "Matches trusted server-owned listing snapshot (not an independent product review)" if price_matches and vendor_matches and live_product
+                  else "Matches verified demo catalog" if price_matches and vendor_matches
+                  else "Submitted price or vendor conflicts with trusted catalog")
+        if live_product is not None:
+            currency_matches = parameters.get("currency", "USD") == live_product["currency"]
+            check("Listing currency", "PASS" if currency_matches else "FAIL",
+                  "Currency matches the trusted listing" if currency_matches else "Currency conflicts with the verified retailer listing")
+            check("Retail seller verification", "WARN", "Marketplace listing and seller identity are not independently verified")
+            check("Total checkout cost", "WARN", "Shipping, taxes and final checkout amount are not confirmed by the live shopping search")
         price = parameters.get("price")
         if type(price) not in (int, float) or not math.isfinite(price) or price <= 0:
             check("Spending limit", "FAIL", "Valid positive numeric price required")
