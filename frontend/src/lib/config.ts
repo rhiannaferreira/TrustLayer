@@ -21,4 +21,5 @@ export function describeBaseUrl(base: string): string {
 export const STORAGE_KEYS = {
   state: 'trustlayer.demo.state.v1',
   theme: 'trustlayer.theme',
+  workspace: 'trustlayer.workspace.v1',
 } as const;

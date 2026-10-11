@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from .catalog import PRODUCTS
 
+# Fixture IDs are scoped to demo catalog products only; provider listings never get fixtures.
+
 # These records are controlled by this service; callers cannot create new trusted
 # sources just by changing an Evidence.source field in an API request.
 FIXTURES: dict[str, dict] = {}
@@ -15,7 +17,7 @@ for pid, product in PRODUCTS.items():
         "id": f"independent-{pid}",
         "source": "independent_review_demo",
         "product_ids": [pid],
-        "content": f"FICTIONAL TEST REVIEW: Independent sample test of {product['name']} reports acceptable comfort and battery life; no durability guarantee.",
+        "content": f"FICTIONAL TEST REVIEW: Independent sample test of {product['name']} reports acceptable build quality and comfort; no durability guarantee.",
         "kind": "independent_review",
     }
     FIXTURES[f"quote-{pid}"] = {

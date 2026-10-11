@@ -12,6 +12,7 @@ import {
   executionMessage,
   executionReference,
   isObj,
+  normalizeAgentRun,
   normalizeAiStatus,
   normalizeCatalog,
   normalizeEvaluation,
@@ -19,12 +20,14 @@ import {
   normalizeProposal,
   unwrapList,
   type AiServiceStatus,
+  type LiveAgentRun,
   type LivePolicy,
   type LiveProposal,
   type NormalizedEvaluation,
 } from './liveContract';
 import { newId } from '@/lib/ids';
 import type { AgentAction, ApiExchange, EvaluationRequest, ExecutionResult, Product } from '@/types';
+import { getWorkspaceId, WORKSPACE_HEADER } from '@/lib/workspace';
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -38,6 +41,123 @@ export class ApiError extends Error {
     this.status = status;
     this.detail = detail;
   }
+}
+
+export interface ResearchSource {
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface ResearchResult {
+  query: string;
+  answer: string | null;
+  sources: ResearchSource[];
+  retrieved_at: string;
+}
+
+export interface TrustCheck {
+  name: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  reason: string;
+}
+
+export interface TrustStage {
+  name: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  checks: TrustCheck[];
+}
+
+export interface TrustRequest {
+  agent_id: string;
+  goal: string;
+  action: string;
+  parameters: Record<string, unknown>;
+  reasoning?: string;
+  evidence?: Array<{ id: string; kind?: string; source?: string; content?: string; trusted?: boolean }>;
+  use_ai?: boolean;
+}
+
+export interface TrustScenario {
+  id: string;
+  domain: string;
+  title: string;
+  expected: 'ALLOW' | 'REVIEW' | 'BLOCK';
+  request: TrustRequest;
+}
+
+export interface TrustDecision {
+  evaluation_id: string;
+  agent_name: string | null;
+  domain: string | null;
+  action: string;
+  decision: 'ALLOW' | 'REVIEW' | 'BLOCK';
+  risk_score: number;
+  risk_level: string;
+  reason: string;
+  stages: TrustStage[];
+  ai_analysis: string | null;
+  created_at: string;
+}
+
+export interface TaskExecution {
+  status: string;
+  mode: string;
+  summary?: string;
+  columns?: string[];
+  rows?: unknown[][];
+  sources?: Array<{ title: string; url: string; snippet: string }>;
+}
+
+export interface TaskStep {
+  index: number;
+  action: string;
+  parameters: Record<string, unknown>;
+  reasoning: string;
+  decision: TrustDecision;
+  execution: TaskExecution | null;
+}
+
+export interface TaskRun {
+  task_id: string;
+  task: string;
+  summary: string;
+  steps: TaskStep[];
+}
+
+export interface StoredDecision extends TrustDecision {
+  agent_id: string;
+  review_status: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  source: string;
+  execution: TaskExecution | null;
+  parameters: Record<string, unknown>;
+}
+
+export interface TrustStats {
+  total: number;
+  allowed: number;
+  held_for_review: number;
+  blocked: number;
+  pending_reviews: number;
+  agents_seen: number;
+  storage: string;
+}
+
+export interface AgentRecord {
+  id: string;
+  name: string;
+  domain: string;
+  scopes: string[];
+  limits: Record<string, unknown>;
+  has_key: boolean;
+  key_prefix: string | null;
+  enabled: boolean;
+}
+
+export interface TrustTools {
+  actions: string[];
+  tools: Record<string, { mode: string; description: string; parameters: Record<string, string> }>;
 }
 
 export interface HealthStatus {
@@ -54,6 +174,8 @@ export type ReviewOutcome = 'APPROVED' | 'REJECTED';
 const DEFAULT_TIMEOUT_MS = 15_000;
 /** AI-assisted evaluations can take longer than plain policy checks. */
 const EVALUATION_TIMEOUT_MS = 60_000;
+/** Product search + AI ranking + evaluation (+ optional AI critique) in one call. */
+const AGENT_RUN_TIMEOUT_MS = 120_000;
 
 interface RawResponse {
   status: number;
@@ -78,7 +200,11 @@ export function createHttpClient(baseUrl: string) {
       res = await fetch(url, {
         method: init.method,
         signal: controller.signal,
-        headers: { Accept: 'application/json', ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        headers: {
+          Accept: 'application/json',
+          [WORKSPACE_HEADER]: getWorkspaceId(),
+          ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
     } catch (err) {
@@ -139,8 +265,8 @@ export function createHttpClient(baseUrl: string) {
     async health(): Promise<HealthStatus> {
       const started = performance.now();
       const body = await request(ENDPOINTS.health, { method: 'GET' }, undefined, 4_000);
-      // Static hosts (Vercel's SPA rewrite) answer /health with index.html and a 200; that is not a backend.
-      if (!isObj(body)) throw new ApiError('Expected a JSON health response', ENDPOINTS.health, undefined, body);
+      // A static host's SPA fallback answers /health with index.html (HTTP 200); that is not a backend.
+      if (typeof body === 'string') throw new ApiError('/health returned a web page, not JSON: no backend is serving this address', ENDPOINTS.health);
       return { ok: true, latency_ms: Math.round(performance.now() - started), body };
     },
 
@@ -150,6 +276,57 @@ export function createHttpClient(baseUrl: string) {
 
     async aiStatus(trace?: Trace): Promise<AiServiceStatus> {
       return normalizeAiStatus(await request(ENDPOINTS.aiStatus, { method: 'GET' }, trace, 6_000));
+    },
+
+    /** General web research (any topic). Sources are unverified third-party content. */
+    async research(query: string, trace?: Trace): Promise<ResearchResult> {
+      const body = await request(ENDPOINTS.research, { method: 'POST', body: { query, max_results: 6 } }, trace, 30_000);
+      if (!isObj(body) || !Array.isArray(body.sources)) throw new ApiError('Research response has an unexpected shape', ENDPOINTS.research, undefined, body);
+      const sources: ResearchSource[] = body.sources
+        .filter((s): s is Record<string, unknown> => isObj(s) && typeof s.url === 'string' && typeof s.title === 'string')
+        .map((s) => ({ id: String(s.id ?? s.url), title: s.title as string, url: s.url as string, snippet: typeof s.snippet === 'string' ? s.snippet : '' }));
+      return { query, answer: typeof body.answer === 'string' ? body.answer : null, sources, retrieved_at: typeof body.retrieved_at === 'string' ? body.retrieved_at : '' };
+    },
+
+    async trustScenarios(trace?: Trace): Promise<TrustScenario[]> {
+      const body = await request(ENDPOINTS.trustScenarios, { method: 'GET' }, trace, 10_000);
+      if (!Array.isArray(body)) throw new ApiError('Scenario list has an unexpected shape', ENDPOINTS.trustScenarios, undefined, body);
+      return body as TrustScenario[];
+    },
+
+    /** Ask TrustLayer whether an agent's proposed action (any domain) may proceed. */
+    async trustEvaluate(req: TrustRequest, trace?: Trace): Promise<TrustDecision> {
+      const body = await request(ENDPOINTS.trustEvaluate, { method: 'POST', body: req }, trace, 30_000);
+      if (!isObj(body) || !Array.isArray(body.stages)) throw new ApiError('Decision has an unexpected shape', ENDPOINTS.trustEvaluate, undefined, body);
+      return body as unknown as TrustDecision;
+    },
+
+    async runTask(task: string): Promise<TaskRun> {
+      return (await request(ENDPOINTS.tasks, { method: 'POST', body: { task } }, undefined, 60_000)) as TaskRun;
+    },
+    async decisions(pending = false): Promise<StoredDecision[]> {
+      return (await request(`${ENDPOINTS.trustDecisions}?limit=200${pending ? '&pending=true' : ''}`, { method: 'GET' }, undefined, 15_000)) as StoredDecision[];
+    },
+    async reviewTrustDecision(id: string, decision: 'APPROVE' | 'REJECT', reviewer: string): Promise<StoredDecision> {
+      return (await request(ENDPOINTS.trustReview(id), { method: 'POST', body: { decision, reviewer } })) as StoredDecision;
+    },
+    async trustStats(): Promise<TrustStats> {
+      return (await request(ENDPOINTS.trustStats, { method: 'GET' }, undefined, 10_000)) as TrustStats;
+    },
+    async trustTools(): Promise<TrustTools> {
+      return (await request(ENDPOINTS.trustTools, { method: 'GET' }, undefined, 10_000)) as TrustTools;
+    },
+    async agents(): Promise<AgentRecord[]> {
+      return (await request(ENDPOINTS.agents, { method: 'GET' }, undefined, 10_000)) as AgentRecord[];
+    },
+    async createAgent(name: string, scopes: string[], limits: Record<string, unknown>): Promise<AgentRecord & { api_key: string }> {
+      return (await request(ENDPOINTS.agents, { method: 'POST', body: { name, scopes, limits } })) as AgentRecord & { api_key: string };
+    },
+    async patchAgent(id: string, patch: { scopes?: string[]; limits?: Record<string, unknown>; enabled?: boolean }): Promise<AgentRecord> {
+      return (await request(ENDPOINTS.agent(id), { method: 'PATCH', body: patch })) as AgentRecord;
+    },
+    async rotateKey(id: string): Promise<{ api_key: string }> {
+      return (await request(ENDPOINTS.agentKey(id), { method: 'POST', body: {} })) as { api_key: string };
     },
 
     async catalog(trace?: Trace): Promise<Product[]> {
@@ -163,6 +340,20 @@ export function createHttpClient(baseUrl: string) {
     async propose(input: { agent_id: string; intent: string; policy_id: string; scenario?: string }, trace?: Trace): Promise<LiveProposal> {
       const body = await request(ENDPOINTS.agentPropose, { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent, ...(input.scenario ? { scenario: input.scenario } : {}) } }, trace);
       return wrapContract(() => normalizeProposal(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentPropose, trace);
+    },
+
+    /**
+     * Live AI agent: the backend searches products for the actual request, ranks only matching
+     * results, proposes one and evaluates it. It never executes. NO_MATCH is a normal result.
+     */
+    async agentRun(input: { agent_id: string; intent: string; policy_id: string; use_ai: boolean; rank_with_ai?: boolean }, trace?: Trace): Promise<LiveAgentRun> {
+      const body = await request(
+        ENDPOINTS.agentRun,
+        { method: 'POST', body: { agent_id: input.agent_id, intent: input.intent, use_ai: input.use_ai, rank_with_ai: input.rank_with_ai ?? true } },
+        trace,
+        AGENT_RUN_TIMEOUT_MS,
+      );
+      return wrapContract(() => normalizeAgentRun(body, input.intent, input.agent_id, input.policy_id), ENDPOINTS.agentRun, trace);
     },
 
     async evaluate(payload: EvaluationRequest, trace?: Trace): Promise<NormalizedEvaluation & { raw: unknown }> {

@@ -151,3 +151,16 @@ reads `evaluation_id`, `event_type`, `details`, `created_at` (the backend sends 
 - `executed` and `review_status` stay `false`/`null` in evaluation responses; execution and review state come from the
   execute/review responses and are kept client-side.
 - CORS allows `localhost:5173` and `127.0.0.1:5173` only (set `CORS_ORIGINS` for others); the dev proxy avoids this entirely.
+
+## Live AI agent (category-aware product discovery)
+
+In Live Backend Mode the Agent Playground has two agent modes:
+
+- **Live AI agent** (default): `POST /api/v1/agent/run` with `{ agent_id, intent, use_ai, rank_with_ai }`. The backend parses the category, requirements, budget and currency from the typed task, searches products (eBay Browse API when configured, otherwise the labeled fictional demo catalog), ranks only matching results, proposes one using real result IDs and evaluates it. It never executes. The response contract is documented in the backend's `BACKEND_INTEGRATION.md`; it is normalized by `normalizeAgentRun` in `src/services/liveContract.ts`.
+- **Seeded demo scenario**: the original `POST /api/v1/agent/propose` fixed headphone scenarios, kept for demos and attack testing only.
+
+The Playground shows the recommendation, same-category alternatives, each product's source, which fields came verbatim from the provider and which are unverified, and the policy outcome. `NO_MATCH` is shown as "No matching products" with nothing proposed. A provider outage (HTTP 503 `PRODUCT_SEARCH_UNAVAILABLE`) is shown as an error, never replaced with a guess.
+
+In Demo Mode (no backend), the rule-based planner only has fictional headphones; a request for another category now returns no match instead of a headphone.
+
+No retailer or Luminal key is ever used in the browser. Configure `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`, `PRODUCT_SEARCH_PROVIDER=ebay` and the `LUMINAL_*` variables on the backend host only.

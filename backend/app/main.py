@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from . import db
 from .catalog import PRODUCTS
@@ -16,6 +17,16 @@ from .luminal import configured, investigate
 from .schemas import Action, EvaluationRequest, ExecutionRequest, PolicyPatch, ProposeRequest, ReviewDecision
 from .ai_agent import AIProposeRequest, generate_proposal
 from .agent_run import AgentRunRequest, run_workflow
+from .discovery import discover
+from .providers import ProviderUnavailable, search_config
+from .web_search import WebSearchUnavailable, research, web_search_status
+from .ranking import RankingRejected
+from .trust import ACTIONS, AGENTS, DEFAULT_LIMITS, SCENARIOS, TrustEvidence, TrustRequest, evaluate_trust
+from . import workspace, sandbox
+from .planner import PlannerUnavailable, plan as plan_task
+from fastapi import Header, Depends
+from typing import Any, Literal
+from pydantic import BaseModel, Field
 load_dotenv()
 
 
@@ -27,15 +38,95 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TrustLayer API", version="0.1.0", lifespan=lifespan,
               description="Hackathon prototype: deterministic agent authorization and simulated execution")
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
+
+
+class WorkspaceMiddleware:
+    """Scope every request to the caller's sandbox, named by the X-TrustLayer-Workspace header."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        raw = dict(scope["headers"]).get(b"x-trustlayer-workspace")
+        workspace_id = db.DEFAULT_WORKSPACE
+        if raw is not None:
+            workspace_id = raw.decode("latin-1").strip()
+            if not db.valid_workspace(workspace_id):
+                response = JSONResponse({"detail": "X-TrustLayer-Workspace must be 8-64 letters, digits, - or _"},
+                                        status_code=400)
+                return await response(scope, receive, send)
+        token = db.use_workspace(workspace_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            db.reset_workspace(token)
+
+
+# Added before CORS so CORS stays outermost and its headers reach every response, including a 400 above.
+app.add_middleware(WorkspaceMiddleware)
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://trust-layer-henna.vercel.app"
+origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
+# Optional regex for preview deployments, e.g. https://trust-layer-.*\.vercel\.app
+origin_regex = os.getenv("CORS_ORIGIN_REGEX") or None
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_origin_regex=origin_regex, allow_credentials=False,
                    allow_methods=["GET", "POST", "PATCH", "OPTIONS"], allow_headers=["*"])
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "local-demo"}
+            "mode": "vercel" if os.getenv("VERCEL") else "local-demo", "product_search": product_search_status(),
+            "web_search": web_search_status()}
+
+
+def product_search_status():
+    cfg = search_config()
+    return {"provider": cfg["provider"], "live": cfg["live"], "configured": cfg["configured"],
+            "missing": cfg["missing"], "demo_fallback": cfg["demo_fallback"]}
+
+
+class ProductSearchRequest(BaseModel):
+    intent: str = Field(min_length=3, max_length=2000)
+
+
+def provider_unavailable(exc: ProviderUnavailable) -> HTTPException:
+    return HTTPException(503, {"code": "PRODUCT_SEARCH_UNAVAILABLE", "message": str(exc),
+                               "provider": search_config()["provider"]})
+
+
+@app.get("/api/v1/products/status")
+def products_status():
+    return product_search_status()
+
+
+@app.post("/api/v1/products/search")
+async def product_search(request: ProductSearchRequest):
+    """Category-aware search only. Proposes nothing and evaluates nothing."""
+    try:
+        return await discover(request.intent)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
+
+
+class ResearchRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+@app.get("/api/v1/research/status")
+def research_status():
+    return web_search_status()
+
+
+@app.post("/api/v1/research")
+async def web_research(request: ResearchRequest):
+    """General web research for any topic. Returns labeled, unverified sources; proposes nothing."""
+    try:
+        return await research(request.query, max_results=request.max_results)
+    except WebSearchUnavailable as exc:
+        raise HTTPException(503, {"code": "WEB_SEARCH_UNAVAILABLE", "message": str(exc), "provider": "tavily"}) from exc
 
 
 @app.get("/api/v1/catalog")
@@ -67,6 +158,12 @@ def evidence_fixtures(product_id: str | None = None):
     return list_demo_fixtures(product_id)
 
 
+@app.get("/api/v1/sandbox")
+def visitor_sandbox():
+    """Which private sandbox this request belongs to (from the X-TrustLayer-Workspace header)."""
+    return {"workspace_id": db.current_workspace(), "shared": db.current_workspace() == db.DEFAULT_WORKSPACE}
+
+
 @app.get("/api/v1/policies")
 def policies():
     return db.list_policies()
@@ -96,9 +193,11 @@ def validate_policy(pid: str, config: dict):
 
 @app.patch("/api/v1/policies/{policy_id}")
 def patch_policy(policy_id: str, patch: PolicyPatch):
+    workspace_id = db.current_workspace()
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM policies WHERE id=?", (policy_id,)).fetchone()
+        db.seed_policies(c, workspace_id)
+        row = c.execute("SELECT * FROM policies WHERE workspace_id=? AND id=?", (workspace_id, policy_id)).fetchone()
         if not row:
             raise HTTPException(404, "Policy not found")
         current = json.loads(row["config_json"])
@@ -106,8 +205,8 @@ def patch_policy(policy_id: str, patch: PolicyPatch):
         validate_policy(policy_id, updated)
         enabled = bool(row["enabled"]) if patch.enabled is None else patch.enabled
         version = row["version"] + 1
-        c.execute("UPDATE policies SET config_json=?, enabled=?, version=?, updated_at=? WHERE id=?",
-                  (json.dumps(updated), int(enabled), version, db.utc_now(), policy_id))
+        c.execute("UPDATE policies SET config_json=?, enabled=?, version=?, updated_at=? WHERE workspace_id=? AND id=?",
+                  (json.dumps(updated), int(enabled), version, db.utc_now(), workspace_id, policy_id))
         db.add_audit("POLICY_UPDATED", details={"policy_id": policy_id, "version": version}, conn=c)
     return next(p for p in db.list_policies() if p["id"] == policy_id)
 
@@ -130,11 +229,15 @@ async def create_evaluation(request: EvaluationRequest):
     return result
 @app.post("/api/v1/agent/run")
 async def run_agent(request: AgentRunRequest):
-    return await run_workflow(
-        request,
-        propose_fn=generate_proposal,
-        evaluate_fn=create_evaluation,
-    )
+    """Discover → rank → propose → evaluate. Never executes; see /api/v1/actions/execute."""
+    vendors = next(p for p in db.list_policies() if p["id"] == "approved-vendors")["config"]["vendors"]
+    try:
+        return await run_workflow(request, evaluate_fn=create_evaluation, approved_vendors=vendors)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
+    except RankingRejected as exc:
+        db.add_audit("AI_PROPOSAL_REJECTED", details={"intent": request.intent[:500], "reason": str(exc)})
+        raise HTTPException(502, str(exc)) from exc
 
 @app.get("/api/v1/evaluations")
 def list_evaluations(limit: int = Query(100, ge=1, le=500)):
@@ -154,7 +257,8 @@ def record_review(evaluation_id: str, payload: ReviewDecision):
     # Local hackathon only: this endpoint has NO authenticated reviewer identity.
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT result_json, review_status FROM evaluations WHERE id=?", (evaluation_id,)).fetchone()
+        row = c.execute("SELECT result_json, review_status FROM evaluations WHERE id=? AND workspace_id=?",
+                        (evaluation_id, db.current_workspace())).fetchone()
         if not row:
             raise HTTPException(404, "Evaluation not found")
         result = json.loads(row["result_json"])
@@ -162,7 +266,8 @@ def record_review(evaluation_id: str, payload: ReviewDecision):
             raise HTTPException(409, "Only REVIEW_REQUIRED evaluations are eligible for human review")
         if row["review_status"]:
             raise HTTPException(409, "Evaluation was already reviewed")
-        c.execute("UPDATE evaluations SET review_status=? WHERE id=?", (payload.decision, evaluation_id))
+        c.execute("UPDATE evaluations SET review_status=? WHERE id=? AND workspace_id=?",
+                  (payload.decision, evaluation_id, db.current_workspace()))
         db.add_audit("HUMAN_REVIEW", evaluation_id, {"reviewer": payload.reviewer,
                                                         "decision": payload.decision}, conn=c)
     return {"evaluation_id": evaluation_id, "review_status": payload.decision,
@@ -174,7 +279,8 @@ def execute(request: ExecutionRequest):
     """Single-use server-side authorization for a simulated checkout. Never buys anything."""
     with db.connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM evaluations WHERE id=?", (request.evaluation_id,)).fetchone()
+        row = c.execute("SELECT * FROM evaluations WHERE id=? AND workspace_id=?",
+                        (request.evaluation_id, db.current_workspace())).fetchone()
         if not row:
             raise HTTPException(404, "Evaluation not found")
         original = json.loads(row["request_json"])
@@ -218,3 +324,175 @@ def audit_events(limit: int = Query(200, ge=1, le=500)):
 def ai_status():
     return {"provider": "luminal", "configured": configured(),
             "mode": "optional_advisory_only", "model": os.getenv("LUMINAL_MODEL") if configured() else None}
+
+
+def require_admin(x_admin_token: str | None = Header(default=None)):
+    """Management endpoints. Open unless TRUSTLAYER_ADMIN_TOKEN is set on the backend."""
+    expected = os.getenv("TRUSTLAYER_ADMIN_TOKEN")
+    if expected and x_admin_token != expected:
+        raise HTTPException(401, "Admin token required")
+
+
+def _decide(request: TrustRequest, agent: dict | None) -> dict:
+    return evaluate_trust(request, agent=agent, lookup=False)
+
+
+@app.get("/api/v1/trust/scenarios")
+def trust_scenarios():
+    return SCENARIOS
+
+
+@app.get("/api/v1/trust/tools")
+def trust_tools():
+    return {"actions": sorted(ACTIONS), "tools": sandbox.TOOLS, "defaults": DEFAULT_LIMITS}
+
+
+@app.post("/api/v1/trust/evaluate")
+async def trust_evaluate(request: TrustRequest):
+    """Evaluate a proposal for a named agent (used by the scenario tester). Never executes."""
+    result = _decide(request, workspace.get_agent(request.agent_id))
+    workspace.save_decision(result, source="tester")
+    return result
+
+
+class TaskRequest(BaseModel):
+    task: str = Field(min_length=3, max_length=2000)
+    agent_id: str = "assistant"
+
+
+@app.post("/api/v1/tasks")
+async def run_task(request: TaskRequest):
+    """Plain-language task -> Luminal plans steps -> every step passes the gate -> only ALLOWED steps run in the sandbox."""
+    agent = workspace.get_agent(request.agent_id)
+    if not agent:
+        raise HTTPException(404, "Unknown agent")
+    try:
+        planned = await plan_task(request.task)
+    except PlannerUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    task_id = "task-" + uuid4().hex[:10]
+    gathered: list[TrustEvidence] = []
+    steps = []
+    for i, step in enumerate(planned["steps"], 1):
+        req = TrustRequest(agent_id=agent["id"], goal=request.task, action=step["action"], parameters=step["parameters"],
+                           reasoning=step["reasoning"], evidence=list(gathered))
+        result = _decide(req, agent)
+        execution = None
+        if result["decision"] == "ALLOW":
+            execution = await sandbox.execute(step["action"], step["parameters"])
+            if step["action"] == "web.research" and execution.get("status") == "executed":
+                text = execution.get("summary", "") + " " + " ".join(f"{s['title']} {s['snippet']}" for s in execution.get("sources", []))
+                gathered.append(TrustEvidence(id=f"web-{i}", kind="web", source="tavily-web", content=text))
+        workspace.save_decision(result, source="task", task_id=task_id, execution=execution)
+        steps.append({"index": i, "action": step["action"], "parameters": step["parameters"], "reasoning": step["reasoning"],
+                      "decision": result, "execution": execution})
+    return {"task_id": task_id, "task": request.task, "agent_id": agent["id"], "summary": planned["summary"], "steps": steps}
+
+
+@app.get("/api/v1/trust/decisions")
+def trust_decisions(limit: int = Query(100, ge=1, le=300), pending: bool = False):
+    return workspace.list_decisions(limit, pending_only=pending)
+
+
+class ReviewBody(BaseModel):
+    decision: Literal["APPROVE", "REJECT"]
+    reviewer: str = Field(default="reviewer", min_length=1, max_length=120)
+
+
+@app.post("/api/v1/trust/decisions/{decision_id}/review")
+async def review_decision(decision_id: str, body: ReviewBody, _: None = Depends(require_admin)):
+    d = workspace.get_decision(decision_id)
+    if not d:
+        raise HTTPException(404, "Decision not found")
+    if d["decision"] != "REVIEW" or d["review_status"] != "PENDING":
+        raise HTTPException(409, "This decision is not waiting for review")
+    execution = None
+    if body.decision == "APPROVE" and d["source"] == "task":
+        execution = await sandbox.execute(d["action"], d["parameters"])
+    if not workspace.record_review(decision_id, body.decision, body.reviewer, execution):
+        raise HTTPException(409, "This decision was already reviewed")
+    return workspace.get_decision(decision_id)
+
+
+@app.get("/api/v1/trust/stats")
+def trust_stats():
+    return workspace.stats()
+
+
+@app.get("/api/v1/agents")
+def agents_list():
+    return workspace.list_agents()
+
+
+class AgentCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    scopes: list[str] = Field(default_factory=list, max_length=30)
+    limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPatch(BaseModel):
+    scopes: list[str] | None = None
+    limits: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
+@app.post("/api/v1/agents")
+def agents_create(body: AgentCreate, _: None = Depends(require_admin)):
+    agent = workspace.create_agent(body.name, body.scopes, body.limits)
+    return {**agent, "api_key": workspace.issue_key(agent["id"])}
+
+
+@app.patch("/api/v1/agents/{agent_id}")
+def agents_patch(agent_id: str, body: AgentPatch, _: None = Depends(require_admin)):
+    agent = workspace.update_agent(agent_id, scopes=body.scopes, limits=body.limits, enabled=body.enabled)
+    if not agent:
+        raise HTTPException(404, "Unknown agent")
+    return agent
+
+
+@app.post("/api/v1/agents/{agent_id}/key")
+def agents_key(agent_id: str, _: None = Depends(require_admin)):
+    """Create or rotate this agent's API key. The key is shown once and only its hash is stored."""
+    if not workspace.get_agent(agent_id):
+        raise HTTPException(404, "Unknown agent")
+    return {"agent_id": agent_id, "api_key": workspace.issue_key(agent_id)}
+
+
+class GateRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=100)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    goal: str = Field(default="", max_length=10000)
+    reasoning: str = Field(default="", max_length=10000)
+    evidence: list[TrustEvidence] = Field(default_factory=list, max_length=20)
+
+
+def key_agent(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "Send 'Authorization: Bearer <agent api key>'")
+    agent = workspace.agent_for_key(authorization[7:].strip())
+    if not agent:
+        raise HTTPException(401, "Invalid or disabled API key")
+    return agent
+
+
+@app.post("/api/v1/gate/check")
+def gate_check(body: GateRequest, agent: dict = Depends(key_agent)):
+    """The integration surface: an external agent asks before acting. The agent identity comes from its key, never the body."""
+    req = TrustRequest(agent_id=agent["id"], goal=body.goal, action=body.action, parameters=body.parameters,
+                       reasoning=body.reasoning, evidence=body.evidence)
+    result = _decide(req, agent)
+    workspace.save_decision(result, source="api")
+    return {"decision_id": result["evaluation_id"], "decision": result["decision"], "allowed": result["decision"] == "ALLOW",
+            "reason": result["reason"], "risk_score": result["risk_score"], "risk_level": result["risk_level"],
+            "stages": result["stages"]}
+
+
+@app.get("/api/v1/gate/decisions/{decision_id}")
+def gate_decision(decision_id: str, agent: dict = Depends(key_agent)):
+    """Poll a REVIEW decision until a human approves or rejects it."""
+    d = workspace.get_decision(decision_id)
+    if not d or d["agent_id"] != agent["id"]:
+        raise HTTPException(404, "Decision not found")
+    status = d["review_status"]
+    allowed = d["decision"] == "ALLOW" or status == "APPROVED"
+    return {"decision_id": decision_id, "decision": d["decision"], "review_status": status, "allowed": allowed, "reason": d["reason"]}

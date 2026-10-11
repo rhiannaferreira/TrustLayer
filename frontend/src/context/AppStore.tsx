@@ -18,7 +18,7 @@ import { buildRecord, withExecution } from '@/lib/records';
 import { createHttpClient, ApiError, type ReviewOutcome, type Trace } from '@/services/api';
 import { createMockClient } from '@/services/mockApi';
 import { submitToGateway } from '@/services/toolGateway';
-import { isObj, normalizeEvaluation, normalizeReviewStatus, type LivePolicy, type LiveProposal, type NormalizedEvaluation } from '@/services/liveContract';
+import { isObj, normalizeEvaluation, normalizeReviewStatus, type LiveAgentRun, type LivePolicy, type LiveProposal, type NormalizedEvaluation } from '@/services/liveContract';
 import { agentName } from '@/data/agents';
 import type {
   AnyPolicy,
@@ -130,7 +130,7 @@ function mergeRemote(existing: EvaluationRecord, incoming: EvaluationRecord): Ev
 }
 
 export function defaultSettings(): Settings {
-  return { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl, useAi: true, autoExecute: false };
+  return { dataSource: ENV_CONFIG.useMocks ? 'mock' : 'api', apiBaseUrl: ENV_CONFIG.apiBaseUrl, useAi: false, autoExecute: false };
 }
 
 export function freshState(settings?: Settings): AppState {
@@ -202,6 +202,11 @@ export interface AppStoreValue {
   patchLivePolicy: (id: string, patch: Record<string, unknown>) => Promise<void>;
   loadCatalog: () => Promise<Product[]>;
   proposeLive: (intent: string, scenario: string, trace: Trace) => Promise<LiveProposal>;
+  /**
+   * Live AI agent (POST /api/v1/agent/run). The backend discovers, ranks, proposes and evaluates in one
+   * call; the evaluation (if any) is stored as a record. NO_MATCH returns no record.
+   */
+  runAgentLive: (intent: string, useAi: boolean, trace: Trace) => Promise<{ run: LiveAgentRun; record: EvaluationRecord | null }>;
   setSettings: (settings: Partial<Settings>) => void;
   resetDemo: () => void;
 }
@@ -449,6 +454,36 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     [http],
   );
 
+  const runAgentLive = useCallback(
+    async (intent: string, useAi: boolean, trace: Trace) => {
+      const submittedAt = new Date().toISOString();
+      const run = await http.agentRun({ agent_id: 'purchase-pilot', intent, policy_id: POLICY_SET_ID, use_ai: useAi }, trace);
+      if (!run.evaluation || !run.proposal) return { run, record: null };
+      const request: EvaluationRequest = {
+        ...run.proposal.request,
+        use_ai: useAi,
+        context: run.proposal.reasoning ? { agent_reasoning: run.proposal.reasoning } : undefined,
+      };
+      const record = buildRecord({
+        request,
+        response: run.evaluation.response,
+        source: 'api',
+        origin: 'playground',
+        policyVersion: run.evaluation.response.policy_version ?? 0,
+        scenario: 'agent-run',
+        submittedAt,
+      });
+      record.raw = isObj(run.raw) ? run.raw.evaluation : run.raw;
+      record.contract_notes = run.evaluation.notes;
+      record.review = reviewFromResponse(run.evaluation.response.review_status, run.evaluation.response.decision);
+      record.exchanges = [...trace];
+      record.agent_run = run.summary;
+      dispatch({ type: 'ADD_RECORD', record });
+      return { run, record };
+    },
+    [http],
+  );
+
   const refreshFromBackend = useCallback(async (): Promise<number> => {
     if (stateRef.current.settings.dataSource !== 'api') return 0;
     const items = await http.listEvaluations();
@@ -501,6 +536,7 @@ export function AppStoreProvider({ children, initialState }: { children: ReactNo
     patchLivePolicy,
     loadCatalog,
     proposeLive,
+    runAgentLive,
     setSettings,
     resetDemo,
   };

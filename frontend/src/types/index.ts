@@ -230,7 +230,7 @@ export interface AgentProfile {
 export interface Product {
   id: string;
   name: string;
-  category: 'headphones';
+  category: string;
   price: number;
   vendor: string;
   rating: number;
@@ -337,6 +337,92 @@ export interface EvaluationRecord {
   contract_notes?: string[];
   /** True when the request had to be rebuilt from a history item (evidence/intent may be missing). */
   request_reconstructed?: boolean;
+  /** Product discovery and ranking behind this proposal (Live AI agent runs only). */
+  agent_run?: AgentRunSummary;
+}
+
+// ---------------------------------------------------------------------------
+// Product discovery (POST /api/v1/agent/run)
+// ---------------------------------------------------------------------------
+
+/** `provider_api` = copied from a real provider listing; `fictional_demo_catalog` = labeled demo data. */
+export type ProductProvenance = 'provider_api' | 'fictional_demo_catalog' | (string & {});
+
+export interface DiscoveredProduct {
+  product_id: string;
+  provider: string;
+  provider_product_id?: string;
+  title: string;
+  category: string | null;
+  category_source?: string;
+  provider_category?: string | null;
+  price: number;
+  currency: string;
+  seller: string | null;
+  product_url: string | null;
+  image_url?: string | null;
+  availability?: string;
+  condition?: string | null;
+  rating?: number | null;
+  source: string;
+  provenance: ProductProvenance;
+  /** Fields whose values came verbatim from the provider API. */
+  provider_fields: string[];
+  /** Fields that were inferred, not provided, or are fictional. */
+  unverified_fields: string[];
+  requirements_matched: string[];
+  requirements_unconfirmed: string[];
+  notes: string[];
+  retrieved_at?: string;
+}
+
+export interface RankedProduct {
+  product: DiscoveredProduct;
+  rank: number;
+  /** Written by the AI model or by deterministic rules (see ranking_source); not verified. */
+  reason: string | null;
+  tradeoffs: string | null;
+}
+
+export interface DiscoveryQuery {
+  categories: string[];
+  requirements: string[];
+  max_price: number | null;
+  min_price: number | null;
+  currency: string;
+}
+
+export interface ExcludedProduct {
+  product_id: string;
+  title: string;
+  category: string | null;
+  price: number;
+  currency: string;
+  reason: string;
+}
+
+export interface DiscoverySummary {
+  search_id: string;
+  status: string;
+  query: DiscoveryQuery;
+  catalog_mode: 'live' | 'demo' | 'demo_fallback' | (string & {});
+  provider: string;
+  provider_error: string | null;
+  returned_count: number;
+  matched_count: number;
+  excluded_counts: Record<string, number>;
+  excluded: ExcludedProduct[];
+  results: DiscoveredProduct[];
+  no_match: { code: string; message: string } | null;
+}
+
+export interface AgentRunSummary {
+  status: 'EVALUATED_NOT_EXECUTED' | 'NO_MATCH' | (string & {});
+  message: string | null;
+  discovery: DiscoverySummary;
+  ranking: { ranking_source: string; summary: string | null } | null;
+  recommendation: RankedProduct | null;
+  alternatives: RankedProduct[];
 }
 
 /** Shape returned by GET /api/v1/audit-events (and derived locally in mock mode). */
