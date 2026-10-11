@@ -6,7 +6,7 @@ TrustLayer checks whether an AI response satisfies the request before you send i
 
 ```bash
 npm install
-cp .env.example .env.local   # then fill in ANTHROPIC_API_KEY
+cp .env.example .env.local   # then fill in AI_API_KEY
 npm run dev
 ```
 
