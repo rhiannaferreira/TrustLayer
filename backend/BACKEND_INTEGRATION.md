@@ -8,7 +8,10 @@ Base URL: `http://localhost:8000` (CORS defaults to Vite localhost port 5173). S
 |---|---|---|
 | GET | `/health` | local backend and AI config status |
 | GET | `/api/v1/catalog` | authoritative demo products |
-| POST | `/api/v1/agent/propose` | seeded proposal; `scenario: valid/budget/prompt_injection/unauthorized` |
+| POST | `/api/v1/agent/run` | **Live AI mode.** Discover → rank → propose → evaluate; never executes |
+| POST | `/api/v1/products/search` | discovery only; `{ "intent": "..." }`; no proposal or evaluation |
+| GET | `/api/v1/products/status` | product search provider status (no secrets) |
+| POST | `/api/v1/agent/propose` | seeded proposal for demo / Attack Lab only; `scenario: valid/budget/prompt_injection/unauthorized` |
 | POST | `/api/v1/evaluations` | assess proposal, save decision and audit |
 | GET | `/api/v1/evaluations` | most recent evaluations (array) |
 | GET | `/api/v1/evaluations/{id}` | evaluation plus `original_request` |
@@ -18,6 +21,80 @@ Base URL: `http://localhost:8000` (CORS defaults to Vite localhost port 5173). S
 | POST | `/api/v1/reviews/{id}/decision` | local demo review; `{ "decision": "APPROVE" }` |
 | GET | `/api/v1/audit-events` | activity log (array) |
 | GET | `/api/v1/ai/status` | optional Luminal readiness |
+
+## Agent run (Live AI mode)
+
+`POST /api/v1/agent/run`
+
+```json
+{ "intent": "Find shoes under $50", "agent_id": "purchase-pilot", "use_ai": false, "rank_with_ai": true }
+```
+
+- `use_ai`: optional Luminal advisory critique of the evaluation (unchanged behavior).
+- `rank_with_ai`: rank with Luminal when configured; otherwise a labeled deterministic ranking.
+
+Response (abridged):
+
+```json
+{
+  "status": "EVALUATED_NOT_EXECUTED",
+  "message": null,
+  "discovery": {
+    "search_id": "search-...",
+    "status": "MATCHED",
+    "query": { "categories": ["shoes"], "category": "shoes", "requirements": [], "max_price": 50.0, "min_price": null, "currency": "USD", "currency_explicit": true },
+    "search_terms": "shoes",
+    "provider": "demo",
+    "catalog_mode": "demo",
+    "provider_error": null,
+    "returned_count": 14,
+    "matched_count": 3,
+    "excluded_counts": { "wrong_category": 9, "currency_mismatch": 0, "over_budget": 1, "under_minimum": 0, "unavailable": 1 },
+    "excluded": [{ "product_id": "sh-003", "title": "...", "category": "shoes", "price": 89.0, "currency": "USD", "reason": "over_budget" }],
+    "results": ["<product record>", "..."],
+    "no_match": null
+  },
+  "ranking": { "ranking_source": "luminal | deterministic_fallback", "summary": "..." },
+  "recommendation": { "product": "<product record>", "rank": 1, "reason": "...", "tradeoffs": "..." },
+  "alternatives": [{ "product": "<product record>", "rank": 2, "reason": "...", "tradeoffs": "..." }],
+  "proposal": {
+    "action": { "type": "place_order", "parameters": { "product_id": "sh-001", "price": 44.99, "currency": "USD", "vendor": "StrideMart", "category": "shoes" } },
+    "evidence": [{ "id": "catalog-sh-001", "source": "demo_catalog", "content": "..." }],
+    "proposal_source": "luminal_generated | deterministic_ranking",
+    "agent_reasoning": "...", "search_id": "search-..."
+  },
+  "evaluation": "<same shape as POST /api/v1/evaluations>",
+  "execution": null
+}
+```
+
+Product record:
+
+```json
+{
+  "product_id": "ebay:v1|1234|0", "provider": "ebay", "provider_product_id": "v1|1234|0",
+  "title": "...", "name": "...", "category": "shoes", "category_source": "provider_category | title_inferred | demo_fixture",
+  "provider_category": "Athletic Shoes", "price": 47.5, "currency": "USD", "seller": "store-name", "vendor": "store-name",
+  "product_url": "https://www.ebay.com/itm/1234", "image_url": "...", "availability": "not_provided | in_stock | out_of_stock",
+  "condition": "New", "rating": null, "source": "ebay_browse_api | demo_catalog",
+  "provenance": "provider_api | fictional_demo_catalog",
+  "provider_fields": ["provider_product_id", "title", "price", "currency", "seller", "product_url", "provider_category"],
+  "unverified_fields": ["availability"],
+  "requirements_matched": ["running"], "requirements_unconfirmed": [],
+  "notes": ["Listing price excludes shipping and tax; it is not a checkout total."],
+  "retrieved_at": "<ISO8601>", "search_id": "search-..."
+}
+```
+
+`provider_fields` lists values copied verbatim from the provider API. Everything in `unverified_fields`, `requirements_matched` and the AI `reason`/`tradeoffs` is inferred or model-written and is not verified. Demo records have no provider fields and no URL.
+
+Other outcomes:
+
+- `status: "NO_MATCH"` (HTTP 200): `discovery.no_match.code` is `NO_QUALIFYING_PRODUCTS` or `CATEGORY_UNRECOGNIZED`; `proposal`, `evaluation`, `recommendation` are `null`; no evaluation is stored.
+- HTTP 503 `{"detail": {"code": "PRODUCT_SEARCH_UNAVAILABLE", "message": "...", "provider": "ebay"}}` when the live provider is down or unconfigured and demo fallback is off.
+- HTTP 502 when the AI ranking is malformed or names any product that is not in `discovery.results`; an `AI_PROPOSAL_REJECTED` audit event is written.
+
+Evaluations now also include `product_verification` (`status`: `PROVIDER_VERIFIED | DEMO_FIXTURE | UNVERIFIED | NOT_APPLICABLE`) and a `Request match` check; `decision_quality` adds `evidence_provenance` and `product_data_provenance`.
 
 ## Sample evaluation POST request
 
@@ -85,7 +162,9 @@ This succeeds **only** when the action exactly matches the evaluated proposal, i
 
 `PATCH /api/v1/policies/spending-limit` with `{"config":{"max_amount":95}}`.
 
-Policy IDs: `spending-limit`, `approved-vendors`, `allowed-actions`, `evidence-review`.
+Policy IDs: `spending-limit`, `approved-vendors`, `allowed-actions`, `evidence-review`, `decision-quality`.
+
+Live provider sellers are checked against `approved-vendors` like any vendor, so add trusted sellers there (e.g. `PATCH /api/v1/policies/approved-vendors`). New databases include the demo vendors `StrideMart`, `PackWorks` and `CompuHub`; an existing local `trustlayer.sqlite3` keeps its old list until patched or deleted.
 
 The list endpoints return raw arrays for easy UI state updates; no pagination beyond a `limit` query parameter.
 

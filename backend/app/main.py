@@ -16,6 +16,10 @@ from .luminal import configured, investigate
 from .schemas import Action, EvaluationRequest, ExecutionRequest, PolicyPatch, ProposeRequest, ReviewDecision
 from .ai_agent import AIProposeRequest, generate_proposal
 from .agent_run import AgentRunRequest, run_workflow
+from .discovery import discover
+from .providers import ProviderUnavailable, search_config
+from .ranking import RankingRejected
+from pydantic import BaseModel, Field
 load_dotenv()
 
 
@@ -35,7 +39,36 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=Fals
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "trustlayer-backend", "ai_configured": configured(),
-            "mode": "local-demo"}
+            "mode": "local-demo", "product_search": product_search_status()}
+
+
+def product_search_status():
+    cfg = search_config()
+    return {"provider": cfg["provider"], "live": cfg["live"], "configured": cfg["configured"],
+            "missing": cfg["missing"], "demo_fallback": cfg["demo_fallback"]}
+
+
+class ProductSearchRequest(BaseModel):
+    intent: str = Field(min_length=3, max_length=2000)
+
+
+def provider_unavailable(exc: ProviderUnavailable) -> HTTPException:
+    return HTTPException(503, {"code": "PRODUCT_SEARCH_UNAVAILABLE", "message": str(exc),
+                               "provider": search_config()["provider"]})
+
+
+@app.get("/api/v1/products/status")
+def products_status():
+    return product_search_status()
+
+
+@app.post("/api/v1/products/search")
+async def product_search(request: ProductSearchRequest):
+    """Category-aware search only. Proposes nothing and evaluates nothing."""
+    try:
+        return await discover(request.intent)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
 
 
 @app.get("/api/v1/catalog")
@@ -130,11 +163,15 @@ async def create_evaluation(request: EvaluationRequest):
     return result
 @app.post("/api/v1/agent/run")
 async def run_agent(request: AgentRunRequest):
-    return await run_workflow(
-        request,
-        propose_fn=generate_proposal,
-        evaluate_fn=create_evaluation,
-    )
+    """Discover → rank → propose → evaluate. Never executes; see /api/v1/actions/execute."""
+    vendors = next(p for p in db.list_policies() if p["id"] == "approved-vendors")["config"]["vendors"]
+    try:
+        return await run_workflow(request, evaluate_fn=create_evaluation, approved_vendors=vendors)
+    except ProviderUnavailable as exc:
+        raise provider_unavailable(exc) from exc
+    except RankingRejected as exc:
+        db.add_audit("AI_PROPOSAL_REJECTED", details={"intent": request.intent[:500], "reason": str(exc)})
+        raise HTTPException(502, str(exc)) from exc
 
 @app.get("/api/v1/evaluations")
 def list_evaluations(limit: int = Query(100, ge=1, le=500)):

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 DEFAULT_POLICIES = [
     ("spending-limit", "Spending limit", {"max_amount": 80.0}),
-    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio"]}),
+    ("approved-vendors", "Approved vendors", {"vendors": ["AudioMart", "Approved Audio", "StrideMart", "PackWorks", "CompuHub"]}),
     ("allowed-actions", "Allowed tool actions", {"actions": ["place_order", "view_product"]}),
     ("evidence-review", "Review suspicious evidence", {"require_review_for_suspicious": True}),
     ("decision-quality", "Decision evidence quality", {"require_review_if_insufficient": False, "min_independent_sources": 1, "require_comparison_for_best": True, "require_cost_quote": True}),
@@ -59,6 +59,10 @@ def init_db():
             id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL UNIQUE,
             action_json TEXT NOT NULL, created_at TEXT NOT NULL,
             FOREIGN KEY(evaluation_id) REFERENCES evaluations(id)
+          );
+          CREATE TABLE IF NOT EXISTS product_listings (
+            product_id TEXT PRIMARY KEY, provider TEXT NOT NULL, search_id TEXT NOT NULL,
+            record_json TEXT NOT NULL, retrieved_at TEXT NOT NULL
           );
           CREATE TABLE IF NOT EXISTS audit_events (
             id TEXT PRIMARY KEY, evaluation_id TEXT, event_type TEXT NOT NULL,
@@ -131,3 +135,26 @@ def list_audit(limit=200):
         rows = c.execute("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{"id": r["id"], "evaluation_id": r["evaluation_id"], "event_type": r["event_type"],
              "details": json.loads(r["details_json"]), "created_at": r["created_at"]} for r in rows]
+
+
+def save_listings(search_id, records):
+    """Persist server-retrieved provider listings so later checks never rely on caller-supplied values."""
+    with connect() as c:
+        for r in records:
+            c.execute("INSERT OR REPLACE INTO product_listings VALUES (?, ?, ?, ?, ?)",
+                      (r["product_id"], r["provider"], search_id, json.dumps({**r, "search_id": search_id}),
+                       r["retrieved_at"]))
+
+
+def get_listing(product_id):
+    if not isinstance(product_id, str):
+        return None
+    with connect() as c:
+        row = c.execute("SELECT record_json FROM product_listings WHERE product_id=?", (product_id,)).fetchone()
+    return json.loads(row["record_json"]) if row else None
+
+
+def listings_for_search(search_id):
+    with connect() as c:
+        rows = c.execute("SELECT record_json FROM product_listings WHERE search_id=?", (search_id,)).fetchall()
+    return [json.loads(r["record_json"]) for r in rows]
