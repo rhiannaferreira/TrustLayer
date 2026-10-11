@@ -9,6 +9,7 @@ import { AuditPage } from '@/pages/AuditPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { TestConsolePage } from '@/pages/TestConsolePage';
 import { InvestigatePage } from '@/pages/InvestigatePage';
+import { ResearchPage } from '@/pages/ResearchPage';
 import { DemoPage } from '@/pages/DemoPage';
 
 export function AppRoutes() {
@@ -18,6 +19,7 @@ export function AppRoutes() {
       <Route element={<AppShell />}>
         <Route index element={<OverviewPage />} />
         <Route path="playground" element={<PlaygroundPage />} />
+        <Route path="research" element={<ResearchPage />} />
         <Route path="decisions" element={<DecisionsPage />} />
         <Route path="test-console" element={<TestConsolePage />} />
         <Route path="investigate" element={<InvestigatePage />} />

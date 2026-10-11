@@ -42,6 +42,20 @@ export class ApiError extends Error {
   }
 }
 
+export interface ResearchSource {
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface ResearchResult {
+  query: string;
+  answer: string | null;
+  sources: ResearchSource[];
+  retrieved_at: string;
+}
+
 export interface HealthStatus {
   ok: boolean;
   latency_ms: number;
@@ -154,6 +168,16 @@ export function createHttpClient(baseUrl: string) {
 
     async aiStatus(trace?: Trace): Promise<AiServiceStatus> {
       return normalizeAiStatus(await request(ENDPOINTS.aiStatus, { method: 'GET' }, trace, 6_000));
+    },
+
+    /** General web research (any topic). Sources are unverified third-party content. */
+    async research(query: string, trace?: Trace): Promise<ResearchResult> {
+      const body = await request(ENDPOINTS.research, { method: 'POST', body: { query, max_results: 6 } }, trace, 30_000);
+      if (!isObj(body) || !Array.isArray(body.sources)) throw new ApiError('Research response has an unexpected shape', ENDPOINTS.research, undefined, body);
+      const sources: ResearchSource[] = body.sources
+        .filter((s): s is Record<string, unknown> => isObj(s) && typeof s.url === 'string' && typeof s.title === 'string')
+        .map((s) => ({ id: String(s.id ?? s.url), title: s.title as string, url: s.url as string, snippet: typeof s.snippet === 'string' ? s.snippet : '' }));
+      return { query, answer: typeof body.answer === 'string' ? body.answer : null, sources, retrieved_at: typeof body.retrieved_at === 'string' ? body.retrieved_at : '' };
     },
 
     async catalog(trace?: Trace): Promise<Product[]> {
