@@ -42,8 +42,27 @@ export function ExecutionFlow({ record, compact }: { record: EvaluationRecord; c
     neutral: 'border-line text-faint',
   };
 
+  if (compact) {
+    return (
+      <ol className="divide-y divide-line rounded-lg border border-line bg-raised/50">
+        {steps.map((s) => (
+          <li key={s.title} className="flex items-center gap-2.5 px-2.5 py-2">
+            <s.icon className={cn('h-3.5 w-3.5 shrink-0', toneCls[s.tone].split(' ')[1])} aria-hidden />
+            <span className="label w-[92px] shrink-0">{s.title}</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-ink" title={s.body}>
+              {s.body}
+            </span>
+            <span className="hidden max-w-[40%] truncate font-mono text-2xs text-faint sm:inline" title={s.sub}>
+              {s.sub}
+            </span>
+          </li>
+        ))}
+      </ol>
+    );
+  }
+
   return (
-    <div className={cn('grid items-stretch gap-1.5', compact ? 'grid-cols-[1fr_auto_1fr_auto_1fr]' : 'grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr]')}>
+    <div className="grid grid-cols-1 items-stretch gap-1.5 sm:grid-cols-[1fr_auto_1fr_auto_1fr]">
       {steps.map((s, i) => (
         <div key={s.title} className="contents">
           <div className={cn('min-w-0 rounded-lg border bg-raised/70 px-2.5 py-2', toneCls[s.tone])}>
@@ -59,7 +78,7 @@ export function ExecutionFlow({ record, compact }: { record: EvaluationRecord; c
             </p>
           </div>
           {i < steps.length - 1 && (
-            <div className={cn('grid place-items-center text-faint', compact ? '' : 'hidden sm:grid')} aria-hidden>
+            <div className="hidden place-items-center text-faint sm:grid" aria-hidden>
               <ChevronRight className="h-4 w-4" />
             </div>
           )}

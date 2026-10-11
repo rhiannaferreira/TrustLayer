@@ -61,7 +61,7 @@ export function ActivityChart({ records }: { records: EvaluationRecord[] }) {
               cursor={{ stroke: c.faint, strokeDasharray: '3 3' }}
             />
             {series.map((s) => (
-              <Area key={s.key} type="monotone" dataKey={s.key} stackId="1" stroke={s.color} strokeWidth={2} fill={`url(#fill-${s.key.replace(/\s/g, '')})`} isAnimationActive={false} />
+              <Area key={s.key} type="stepAfter" dataKey={s.key} stackId="1" stroke={s.color} strokeWidth={2} fill={`url(#fill-${s.key.replace(/\s/g, '')})`} isAnimationActive={false} />
             ))}
           </AreaChart>
         </ResponsiveContainer>

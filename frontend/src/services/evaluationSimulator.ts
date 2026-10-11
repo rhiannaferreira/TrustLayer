@@ -330,7 +330,7 @@ export function suggestAlternatives(
   vendors: Policy<'vendor_allowlist'> | undefined,
 ): Alternative[] {
   return CATALOG.filter((p) => p.id !== excludeId && isCompliantCandidate(p.price, p.vendor, spending, vendors))
-    .sort((a, b) => b.rating - a.rating || a.price - b.price)
+    .sort((a, b) => confidence(b) - confidence(a) || a.price - b.price)
     .slice(0, 2)
     .map((p) => ({
       product_id: p.id,
@@ -339,6 +339,11 @@ export function suggestAlternatives(
       vendor: p.vendor,
       reason: `Rated ${p.rating.toFixed(1)} from ${p.review_count.toLocaleString()} reviews; complies with current spending and vendor policies.`,
     }));
+}
+
+/** Rating discounted for thin review history, so sparsely reviewed products are not over-trusted. */
+function confidence(p: { rating: number; review_count: number }): number {
+  return p.rating - (p.review_count < 100 ? 0.3 : 0);
 }
 
 function truncate(value: string, max: number): string {
