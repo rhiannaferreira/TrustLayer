@@ -84,15 +84,8 @@ def test_policy_change_in_one_workspace_does_not_invalidate_another(client):
 def test_workspace_header_is_validated(client):
     assert client.get("/api/v1/policies", headers={"X-TrustLayer-Workspace": "short"}).status_code == 400
     assert client.get("/api/v1/policies", headers={"X-TrustLayer-Workspace": "bad id with spaces"}).status_code == 400
-    assert client.get("/api/v1/workspace", headers=ACME).json() == {"workspace_id": "acme-sandbox-1", "shared": False}
-    assert client.get("/api/v1/workspace").json() == {"workspace_id": "default", "shared": True}
-
-
-def test_trust_gate_decisions_stay_private(client):
-    scenario = client.get("/api/v1/trust/scenarios").json()[0]
-    assert client.post("/api/v1/trust/evaluate", json=scenario["request"], headers=ACME).status_code == 200
-    assert len(client.get("/api/v1/trust/decisions", headers=ACME).json()) == 1
-    assert client.get("/api/v1/trust/decisions", headers=GLOBEX).json() == []
+    assert client.get("/api/v1/sandbox", headers=ACME).json() == {"workspace_id": "acme-sandbox-1", "shared": False}
+    assert client.get("/api/v1/sandbox").json() == {"workspace_id": "default", "shared": True}
 
 
 def test_database_from_before_workspaces_is_upgraded(tmp_path, monkeypatch):

@@ -114,7 +114,7 @@ export function RulesPage() {
         <div className="space-y-4">
           <Panel
             title="Your private sandbox"
-            subtitle="Rules and history here belong to this browser only. Other visitors can't see or change them."
+            subtitle="Your rules and your purchasing agent's decisions belong to this browser only. Other visitors can't see or change them."
             icon={<KeyRound className="h-3.5 w-3.5" />}
             actions={
               <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={freshSandbox}>
@@ -124,7 +124,7 @@ export function RulesPage() {
           >
             <p className="text-xs text-muted">
               Sandbox <span className="font-mono text-ink">{workspace.slice(0, 15)}…</span> · These rules apply to the purchasing agent in the Agent Playground, Attack Lab and Test Console.
-              The Trust Gate's per-agent limits are fixed demo settings.
+              The Trust Gate, Agent Workspace and Agents pages use per-agent settings that all visitors share.
             </p>
           </Panel>
 
