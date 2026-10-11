@@ -100,6 +100,65 @@ export interface TrustDecision {
   created_at: string;
 }
 
+export interface TaskExecution {
+  status: string;
+  mode: string;
+  summary?: string;
+  columns?: string[];
+  rows?: unknown[][];
+  sources?: Array<{ title: string; url: string; snippet: string }>;
+}
+
+export interface TaskStep {
+  index: number;
+  action: string;
+  parameters: Record<string, unknown>;
+  reasoning: string;
+  decision: TrustDecision;
+  execution: TaskExecution | null;
+}
+
+export interface TaskRun {
+  task_id: string;
+  task: string;
+  summary: string;
+  steps: TaskStep[];
+}
+
+export interface StoredDecision extends TrustDecision {
+  agent_id: string;
+  review_status: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  source: string;
+  execution: TaskExecution | null;
+  parameters: Record<string, unknown>;
+}
+
+export interface TrustStats {
+  total: number;
+  allowed: number;
+  held_for_review: number;
+  blocked: number;
+  pending_reviews: number;
+  agents_seen: number;
+  storage: string;
+}
+
+export interface AgentRecord {
+  id: string;
+  name: string;
+  domain: string;
+  scopes: string[];
+  limits: Record<string, unknown>;
+  has_key: boolean;
+  key_prefix: string | null;
+  enabled: boolean;
+}
+
+export interface TrustTools {
+  actions: string[];
+  tools: Record<string, { mode: string; description: string; parameters: Record<string, string> }>;
+}
+
 export interface HealthStatus {
   ok: boolean;
   latency_ms: number;
@@ -235,6 +294,34 @@ export function createHttpClient(baseUrl: string) {
       const body = await request(ENDPOINTS.trustEvaluate, { method: 'POST', body: req }, trace, 30_000);
       if (!isObj(body) || !Array.isArray(body.stages)) throw new ApiError('Decision has an unexpected shape', ENDPOINTS.trustEvaluate, undefined, body);
       return body as unknown as TrustDecision;
+    },
+
+    async runTask(task: string): Promise<TaskRun> {
+      return (await request(ENDPOINTS.tasks, { method: 'POST', body: { task } }, undefined, 60_000)) as TaskRun;
+    },
+    async decisions(pending = false): Promise<StoredDecision[]> {
+      return (await request(`${ENDPOINTS.trustDecisions}?limit=200${pending ? '&pending=true' : ''}`, { method: 'GET' }, undefined, 15_000)) as StoredDecision[];
+    },
+    async reviewTrustDecision(id: string, decision: 'APPROVE' | 'REJECT', reviewer: string): Promise<StoredDecision> {
+      return (await request(ENDPOINTS.trustReview(id), { method: 'POST', body: { decision, reviewer } })) as StoredDecision;
+    },
+    async trustStats(): Promise<TrustStats> {
+      return (await request(ENDPOINTS.trustStats, { method: 'GET' }, undefined, 10_000)) as TrustStats;
+    },
+    async trustTools(): Promise<TrustTools> {
+      return (await request(ENDPOINTS.trustTools, { method: 'GET' }, undefined, 10_000)) as TrustTools;
+    },
+    async agents(): Promise<AgentRecord[]> {
+      return (await request(ENDPOINTS.agents, { method: 'GET' }, undefined, 10_000)) as AgentRecord[];
+    },
+    async createAgent(name: string, scopes: string[], limits: Record<string, unknown>): Promise<AgentRecord & { api_key: string }> {
+      return (await request(ENDPOINTS.agents, { method: 'POST', body: { name, scopes, limits } })) as AgentRecord & { api_key: string };
+    },
+    async patchAgent(id: string, patch: { scopes?: string[]; limits?: Record<string, unknown>; enabled?: boolean }): Promise<AgentRecord> {
+      return (await request(ENDPOINTS.agent(id), { method: 'PATCH', body: patch })) as AgentRecord;
+    },
+    async rotateKey(id: string): Promise<{ api_key: string }> {
+      return (await request(ENDPOINTS.agentKey(id), { method: 'POST', body: {} })) as { api_key: string };
     },
 
     async catalog(trace?: Trace): Promise<Product[]> {
