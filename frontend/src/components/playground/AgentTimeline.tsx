@@ -4,9 +4,10 @@ import { classifyAiStatus } from '@/services/liveContract';
 import { effectiveReviewStatus } from '@/lib/records';
 import { DECISION_LABEL, formatTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import type { DataSource, EvaluationRecord } from '@/types';
+import type { AgentRunSummary, DataSource, EvaluationRecord } from '@/types';
 
-export type RunPhase = 'idle' | 'proposing' | 'evaluating' | 'done' | 'error';
+export type RunPhase = 'idle' | 'proposing' | 'evaluating' | 'done' | 'no_match' | 'error';
+export type ProposalSource = 'backend-agent' | 'backend-seeded' | 'demo-planner';
 export type StepState = 'pending' | 'active' | 'done' | 'failed' | 'warn' | 'skipped' | 'waiting';
 /** Who vouches for a step: the backend, the in-browser demo engine, or the browser itself. */
 export type StepSource = 'backend' | 'demo' | 'local' | null;
@@ -23,8 +24,12 @@ export interface TimelineStep {
 interface Input {
   phase: RunPhase;
   source: DataSource;
-  proposalSource: 'backend-seeded' | 'demo-planner' | null;
+  proposalSource: ProposalSource | null;
   proposalScenario?: string;
+  /** Live AI agent mode: one backend call discovers, ranks, proposes and evaluates. */
+  agentMode?: boolean;
+  agentRun?: AgentRunSummary | null;
+  noMatchMessage?: string | null;
   startedAt: string | null;
   record: EvaluationRecord | null;
   useAi: boolean;
@@ -42,15 +47,41 @@ export function buildAgentTimeline(i: Input): TimelineStep[] {
 
   steps.push({ id: 'task', title: 'Task received', state: i.startedAt ? 'done' : 'pending', source: i.startedAt ? 'local' : null, at: i.startedAt ?? undefined });
 
+  if (i.agentMode) {
+    const d = i.agentRun?.discovery;
+    let discovery: TimelineStep = { id: 'discovery', title: 'Products discovered', state: 'pending', source: null };
+    if (i.phase === 'proposing') discovery = { ...discovery, state: 'active', detail: 'POST /api/v1/agent/run: searching products for the requested category and budget…' };
+    else if (i.errorAt === 'proposal') discovery = { ...discovery, state: 'failed', source: 'backend', detail: i.errorMessage };
+    else if (d)
+      discovery = {
+        ...discovery,
+        state: d.matched_count ? 'done' : 'warn',
+        source: 'backend',
+        detail: `${d.matched_count} of ${d.returned_count} listings matched ${d.query.categories.join(' or ') || 'the request'} · ${d.catalog_mode === 'live' ? `live provider ${d.provider}` : d.catalog_mode === 'demo_fallback' ? 'demo fallback (provider unavailable)' : 'fictional demo catalog'}`,
+      };
+    steps.push(discovery);
+  }
+
   let proposal: TimelineStep = { id: 'proposal', title: 'Proposal produced', state: 'pending', source: null };
-  if (i.phase === 'proposing') proposal = { ...proposal, state: 'active', detail: live ? 'Requesting a proposal from POST /api/v1/agent/propose (seeded demo scenarios)…' : 'Deterministic demo planner is choosing an action…' };
-  else if (i.errorAt === 'proposal') proposal = { ...proposal, state: 'failed', source: live ? 'backend' : 'demo', detail: i.errorMessage };
+  if (i.phase === 'no_match') proposal = { ...proposal, state: 'skipped', source: i.agentMode ? 'backend' : 'demo', detail: i.noMatchMessage ?? 'No matching products; nothing proposed.' };
+  else if (i.phase === 'proposing')
+    proposal = {
+      ...proposal,
+      state: i.agentMode ? 'pending' : 'active',
+      detail: i.agentMode ? undefined : live ? 'Requesting a proposal from POST /api/v1/agent/propose (seeded demo scenarios)…' : 'Deterministic demo planner is choosing an action…',
+    };
+  else if (i.errorAt === 'proposal') proposal = { ...proposal, state: 'failed', source: live ? 'backend' : 'demo', detail: i.agentMode ? undefined : i.errorMessage };
   else if (i.proposalSource)
     proposal = {
       ...proposal,
       state: 'done',
-      source: i.proposalSource === 'backend-seeded' ? 'backend' : 'demo',
-      detail: i.proposalSource === 'backend-seeded' ? `Seeded agent proposal from the backend${i.proposalScenario ? ` (scenario: ${i.proposalScenario})` : ''} — not free-form LLM planning.` : 'Rule-based demo planner (not an LLM).',
+      source: i.proposalSource === 'demo-planner' ? 'demo' : 'backend',
+      detail:
+        i.proposalSource === 'backend-agent'
+          ? `${i.agentRun?.recommendation ? `${i.agentRun.recommendation.product.title} · ` : ''}ranked by ${i.agentRun?.ranking?.ranking_source === 'luminal' ? 'Luminal (AI)' : 'deterministic rules (no AI)'} from real search results only.`
+          : i.proposalSource === 'backend-seeded'
+            ? `Seeded agent proposal from the backend${i.proposalScenario ? ` (scenario: ${i.proposalScenario})` : ''} — not free-form LLM planning.`
+            : 'Rule-based demo planner (not an LLM).',
     };
   steps.push(proposal);
 
@@ -59,8 +90,14 @@ export function buildAgentTimeline(i: Input): TimelineStep[] {
     id: 'requested',
     title: 'TrustLayer evaluation requested',
     state: requested ? 'done' : 'pending',
-    source: requested ? 'local' : null,
-    detail: requested ? (live ? `POST /api/v1/evaluations · use_ai: ${i.useAi}` : 'Sent to the in-browser demo engine (no HTTP).') : undefined,
+    source: requested ? (i.agentMode ? 'backend' : 'local') : null,
+    detail: requested
+      ? i.agentMode
+        ? `Submitted server-side by /api/v1/agent/run to the same evaluator · use_ai: ${i.useAi}`
+        : live
+          ? `POST /api/v1/evaluations · use_ai: ${i.useAi}`
+          : 'Sent to the in-browser demo engine (no HTTP).'
+      : undefined,
   });
 
   const evaluating = i.phase === 'evaluating';
@@ -119,12 +156,13 @@ export function buildAgentTimeline(i: Input): TimelineStep[] {
       at: last?.at,
     });
   } else {
+    const noMatch = i.phase === 'no_match';
     steps.push({
       id: 'policies',
       title: 'Policies checked',
-      state: evaluating ? 'active' : failedEval ? 'failed' : 'pending',
+      state: noMatch ? 'skipped' : evaluating ? 'active' : failedEval ? 'failed' : 'pending',
       source: null,
-      detail: evaluating ? (live ? 'Backend is evaluating. Results appear only when it responds.' : 'Running deterministic demo checks…') : failedEval ? i.errorMessage : undefined,
+      detail: noMatch ? 'Nothing to evaluate.' : evaluating ? (live ? 'Backend is evaluating. Results appear only when it responds.' : 'Running deterministic demo checks…') : failedEval ? i.errorMessage : undefined,
     });
     steps.push({
       id: 'ai',
