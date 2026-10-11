@@ -15,11 +15,11 @@ from .db import utc_now
 AGENTS: dict[str, dict[str, Any]] = {
     "finance-agent": {"name": "Finance agent", "domain": "finance",
                       "scopes": ["finance.transfer_funds", "finance.pay_invoice"],
-                      "limits": {"auto_limit": 500.0, "hard_limit": 5000.0},
-                      "approved_payees": ["Acme Supplies", "CloudHost Inc", "City Utilities"]},
+                      "limits": {"auto_limit": 500.0, "hard_limit": 5000.0,
+                                 "approved_payees": ["Acme Supplies", "CloudHost Inc", "City Utilities"]}},
     "data-agent": {"name": "Data assistant", "domain": "data",
                    "scopes": ["data.read_records", "data.export_records"],
-                   "limits": {"max_records": 100}, "internal_destinations": ["internal-warehouse", "analytics-team"]},
+                   "limits": {"max_records": 100, "internal_destinations": ["internal-warehouse", "analytics-team"]}},
     "db-agent": {"name": "Database operator", "domain": "database",
                  "scopes": ["db.run_query"], "limits": {}},
     "care-agent": {"name": "Clinical assistant", "domain": "healthcare",
@@ -27,13 +27,28 @@ AGENTS: dict[str, dict[str, Any]] = {
     "office-agent": {"name": "Workplace assistant", "domain": "workplace",
                      "scopes": ["workplace.send_email", "workplace.delete_files", "workplace.grant_access"],
                      "limits": {"max_recipients": 10, "max_deletes": 20}},
+    # General-purpose assistant used by the Agent workspace. Deliberately NOT granted transfers,
+    # exports, access grants or medication advice, so those requests are refused on permissions alone.
+    "assistant": {"name": "Workspace assistant", "domain": "general",
+                  "scopes": ["web.research", "data.read_records", "db.run_query", "workplace.send_email",
+                             "workplace.delete_files", "commerce.purchase", "finance.pay_invoice"],
+                  "limits": {"auto_limit": 500.0, "hard_limit": 5000.0,
+                             "approved_payees": ["Acme Supplies", "CloudHost Inc", "City Utilities"],
+                             "max_records": 100, "internal_destinations": ["internal-warehouse", "analytics-team"],
+                             "max_recipients": 10, "max_deletes": 20, "budget": 300.0,
+                             "approved_vendors": ["OfficeDepot", "Staples", "Amazon Business"]}},
     "purchase-agent": {"name": "Purchasing agent", "domain": "commerce",
-                       "scopes": ["commerce.purchase"], "limits": {"budget": 300.0},
-                       "approved_vendors": ["OfficeDepot", "Staples", "Amazon Business"]},
+                       "scopes": ["commerce.purchase"], "limits": {"budget": 300.0, "approved_vendors": ["OfficeDepot", "Staples", "Amazon Business"]}},
 }
+
+# Fallbacks so a newly created agent without every limit still gets conservative checks.
+DEFAULT_LIMITS = {"auto_limit": 100.0, "hard_limit": 1000.0, "approved_payees": [], "max_records": 50,
+                  "internal_destinations": [], "max_recipients": 5, "max_deletes": 10, "budget": 100.0,
+                  "approved_vendors": []}
 
 # Sensitivity and reversibility of each action, used for risk scoring.
 ACTIONS: dict[str, dict[str, Any]] = {
+    "web.research": {"sensitivity": 0, "reversible": True, "evidence": []},
     "finance.transfer_funds": {"sensitivity": 3, "reversible": False, "evidence": ["invoice"]},
     "finance.pay_invoice": {"sensitivity": 3, "reversible": False, "evidence": ["invoice"]},
     "data.read_records": {"sensitivity": 2, "reversible": True, "evidence": []},
@@ -92,6 +107,8 @@ def _c(name, status, reason):
 def check_permissions(req: TrustRequest, agent):
     if agent is None:
         return [_c("Agent identity", "FAIL", f"Unknown agent '{req.agent_id}'; no permissions granted")]
+    if not agent.get("enabled", True):
+        return [_c("Agent identity", "FAIL", f"{agent['name']} is disabled; all actions are refused")]
     out = [_c("Agent identity", "PASS", f"{agent['name']} is a registered agent")]
     if req.action not in ACTIONS:
         out.append(_c("Action registered", "FAIL", f"'{req.action}' is not a recognised action; default deny"))
@@ -128,7 +145,7 @@ def check_evidence(req: TrustRequest):
 def check_policy(req: TrustRequest, agent):
     if agent is None or req.action not in agent["scopes"]:
         return [_c("Policy", "WARN", "Skipped: no valid grant to evaluate policy against")]
-    p, lim, a = req.parameters, agent["limits"], req.action
+    p, lim, a = req.parameters, {**DEFAULT_LIMITS, **agent["limits"]}, req.action
     out = []
     if a in ("finance.transfer_funds", "finance.pay_invoice"):
         amt = _num(p.get("amount"))
@@ -141,7 +158,7 @@ def check_policy(req: TrustRequest, agent):
         else:
             out.append(_c("Transfer limit", "PASS", f"${amt:,.2f} is within the ${lim['auto_limit']:,.2f} auto-approval limit"))
         payee = p.get("payee")
-        if payee in agent["approved_payees"]:
+        if payee in lim["approved_payees"]:
             out.append(_c("Payee", "PASS", f"{payee} is an approved payee"))
         else:
             out.append(_c("Payee", "WARN", f"{payee or 'Unknown payee'} is not on the approved payee list"))
@@ -166,7 +183,7 @@ def check_policy(req: TrustRequest, agent):
             out.append(_c("Sensitive fields", "WARN", f"Request includes sensitive fields: {', '.join(sens)}"))
         dest = p.get("destination")
         if a == "data.export_records":
-            if dest in agent["internal_destinations"]:
+            if dest in lim["internal_destinations"]:
                 out.append(_c("Destination", "PASS", f"{dest} is an internal destination"))
             else:
                 out.append(_c("Destination", "FAIL", f"Exporting to external destination '{dest or 'unspecified'}' is not permitted"))
@@ -222,6 +239,9 @@ def check_policy(req: TrustRequest, agent):
         role = str(p.get("role", "")).lower()
         out.append(_c("Privilege level", "FAIL" if role in ("owner", "root") else "WARN" if role == "admin" else "PASS",
                       f"Granting '{role}' access" + (" is never delegated to agents" if role in ("owner", "root") else " needs approval" if role == "admin" else " is a standard role")))
+    elif a == "web.research":
+        q = str(p.get("query", "")).strip()
+        out.append(_c("Query", "PASS" if len(q) >= 3 else "FAIL", "Read-only web lookup" if len(q) >= 3 else "A search query is required"))
     elif a == "commerce.purchase":
         price = _num(p.get("price"))
         if price is None or price <= 0:
@@ -229,8 +249,8 @@ def check_policy(req: TrustRequest, agent):
         out.append(_c("Budget", "PASS" if price <= lim["budget"] else "FAIL",
                       f"${price:,.2f} is within the ${lim['budget']:,.2f} budget" if price <= lim["budget"] else f"${price:,.2f} exceeds the ${lim['budget']:,.2f} budget"))
         v = p.get("vendor")
-        out.append(_c("Vendor", "PASS" if v in agent["approved_vendors"] else "WARN",
-                      f"{v} is approved" if v in agent["approved_vendors"] else f"{v or 'Unknown vendor'} is not an approved vendor"))
+        out.append(_c("Vendor", "PASS" if v in lim["approved_vendors"] else "WARN",
+                      f"{v} is approved" if v in lim["approved_vendors"] else f"{v or 'Unknown vendor'} is not an approved vendor"))
     return out
 
 
@@ -261,8 +281,10 @@ def score_risk(req: TrustRequest, stages):
     return score, "CRITICAL" if score >= 85 else "HIGH" if score >= 65 else "MEDIUM" if score >= 40 else "LOW"
 
 
-def evaluate_trust(req: TrustRequest, ai_analysis=None, ai_error=None) -> dict[str, Any]:
-    agent = AGENTS.get(req.agent_id)
+def evaluate_trust(req: TrustRequest, ai_analysis=None, ai_error=None, agent=None, lookup=True) -> dict[str, Any]:
+    """`agent` is the stored (editable) agent record; falls back to the built-in defaults."""
+    if agent is None and lookup:
+        agent = AGENTS.get(req.agent_id)
     stages = [_stage("Permissions", check_permissions(req, agent)),
               _stage("Evidence verification", check_evidence(req)),
               _stage("Policy", check_policy(req, agent)),

@@ -20,7 +20,11 @@ from .discovery import discover
 from .providers import ProviderUnavailable, search_config
 from .web_search import WebSearchUnavailable, research, web_search_status
 from .ranking import RankingRejected
-from .trust import AGENTS, SCENARIOS, TrustRequest, evaluate_trust
+from .trust import ACTIONS, AGENTS, DEFAULT_LIMITS, SCENARIOS, TrustEvidence, TrustRequest, evaluate_trust
+from . import workspace, sandbox
+from .planner import PlannerUnavailable, plan as plan_task
+from fastapi import Header, Depends
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 load_dotenv()
 
@@ -282,9 +286,15 @@ def ai_status():
             "mode": "optional_advisory_only", "model": os.getenv("LUMINAL_MODEL") if configured() else None}
 
 
-@app.get("/api/v1/trust/agents")
-def trust_agents():
-    return [{"id": k, **{f: v[f] for f in ("name", "domain", "scopes", "limits")}} for k, v in AGENTS.items()]
+def require_admin(x_admin_token: str | None = Header(default=None)):
+    """Management endpoints. Open unless TRUSTLAYER_ADMIN_TOKEN is set on the backend."""
+    expected = os.getenv("TRUSTLAYER_ADMIN_TOKEN")
+    if expected and x_admin_token != expected:
+        raise HTTPException(401, "Admin token required")
+
+
+def _decide(request: TrustRequest, agent: dict | None) -> dict:
+    return evaluate_trust(request, agent=agent, lookup=False)
 
 
 @app.get("/api/v1/trust/scenarios")
@@ -292,21 +302,157 @@ def trust_scenarios():
     return SCENARIOS
 
 
+@app.get("/api/v1/trust/tools")
+def trust_tools():
+    return {"actions": sorted(ACTIONS), "tools": sandbox.TOOLS, "defaults": DEFAULT_LIMITS}
+
+
 @app.post("/api/v1/trust/evaluate")
 async def trust_evaluate(request: TrustRequest):
-    """General-purpose gate: any agent proposes any registered action; TrustLayer decides. Never executes."""
-    ai_analysis = ai_error = None
-    if request.use_ai:
-        try:
-            ai_analysis = await investigate(request.goal, {"action": request.action, "parameters": request.parameters},
-                                            [e.model_dump() for e in request.evidence])
-        except Exception as ex:
-            ai_error = f"AI analysis unavailable ({type(ex).__name__})"
-    result = evaluate_trust(request, ai_analysis, ai_error)
-    db.add_audit("TRUST_DECISION", result["evaluation_id"], result)
+    """Evaluate a proposal for a named agent (used by the scenario tester). Never executes."""
+    result = _decide(request, workspace.get_agent(request.agent_id))
+    workspace.save_decision(result, source="tester")
     return result
 
 
+class TaskRequest(BaseModel):
+    task: str = Field(min_length=3, max_length=2000)
+    agent_id: str = "assistant"
+
+
+@app.post("/api/v1/tasks")
+async def run_task(request: TaskRequest):
+    """Plain-language task -> Luminal plans steps -> every step passes the gate -> only ALLOWED steps run in the sandbox."""
+    agent = workspace.get_agent(request.agent_id)
+    if not agent:
+        raise HTTPException(404, "Unknown agent")
+    try:
+        planned = await plan_task(request.task)
+    except PlannerUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    task_id = "task-" + uuid4().hex[:10]
+    gathered: list[TrustEvidence] = []
+    steps = []
+    for i, step in enumerate(planned["steps"], 1):
+        req = TrustRequest(agent_id=agent["id"], goal=request.task, action=step["action"], parameters=step["parameters"],
+                           reasoning=step["reasoning"], evidence=list(gathered))
+        result = _decide(req, agent)
+        execution = None
+        if result["decision"] == "ALLOW":
+            execution = await sandbox.execute(step["action"], step["parameters"])
+            if step["action"] == "web.research" and execution.get("status") == "executed":
+                text = execution.get("summary", "") + " " + " ".join(f"{s['title']} {s['snippet']}" for s in execution.get("sources", []))
+                gathered.append(TrustEvidence(id=f"web-{i}", kind="web", source="tavily-web", content=text))
+        workspace.save_decision(result, source="task", task_id=task_id, execution=execution)
+        steps.append({"index": i, "action": step["action"], "parameters": step["parameters"], "reasoning": step["reasoning"],
+                      "decision": result, "execution": execution})
+    return {"task_id": task_id, "task": request.task, "agent_id": agent["id"], "summary": planned["summary"], "steps": steps}
+
+
 @app.get("/api/v1/trust/decisions")
-def trust_decisions(limit: int = Query(50, ge=1, le=200)):
-    return [e["details"] for e in db.list_audit(500) if e["event_type"] == "TRUST_DECISION"][:limit]
+def trust_decisions(limit: int = Query(100, ge=1, le=300), pending: bool = False):
+    return workspace.list_decisions(limit, pending_only=pending)
+
+
+class ReviewBody(BaseModel):
+    decision: Literal["APPROVE", "REJECT"]
+    reviewer: str = Field(default="reviewer", min_length=1, max_length=120)
+
+
+@app.post("/api/v1/trust/decisions/{decision_id}/review")
+async def review_decision(decision_id: str, body: ReviewBody, _: None = Depends(require_admin)):
+    d = workspace.get_decision(decision_id)
+    if not d:
+        raise HTTPException(404, "Decision not found")
+    if d["decision"] != "REVIEW" or d["review_status"] != "PENDING":
+        raise HTTPException(409, "This decision is not waiting for review")
+    execution = None
+    if body.decision == "APPROVE" and d["source"] == "task":
+        execution = await sandbox.execute(d["action"], d["parameters"])
+    if not workspace.record_review(decision_id, body.decision, body.reviewer, execution):
+        raise HTTPException(409, "This decision was already reviewed")
+    return workspace.get_decision(decision_id)
+
+
+@app.get("/api/v1/trust/stats")
+def trust_stats():
+    return workspace.stats()
+
+
+@app.get("/api/v1/agents")
+def agents_list():
+    return workspace.list_agents()
+
+
+class AgentCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    scopes: list[str] = Field(default_factory=list, max_length=30)
+    limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPatch(BaseModel):
+    scopes: list[str] | None = None
+    limits: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
+@app.post("/api/v1/agents")
+def agents_create(body: AgentCreate, _: None = Depends(require_admin)):
+    agent = workspace.create_agent(body.name, body.scopes, body.limits)
+    return {**agent, "api_key": workspace.issue_key(agent["id"])}
+
+
+@app.patch("/api/v1/agents/{agent_id}")
+def agents_patch(agent_id: str, body: AgentPatch, _: None = Depends(require_admin)):
+    agent = workspace.update_agent(agent_id, scopes=body.scopes, limits=body.limits, enabled=body.enabled)
+    if not agent:
+        raise HTTPException(404, "Unknown agent")
+    return agent
+
+
+@app.post("/api/v1/agents/{agent_id}/key")
+def agents_key(agent_id: str, _: None = Depends(require_admin)):
+    """Create or rotate this agent's API key. The key is shown once and only its hash is stored."""
+    if not workspace.get_agent(agent_id):
+        raise HTTPException(404, "Unknown agent")
+    return {"agent_id": agent_id, "api_key": workspace.issue_key(agent_id)}
+
+
+class GateRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=100)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    goal: str = Field(default="", max_length=10000)
+    reasoning: str = Field(default="", max_length=10000)
+    evidence: list[TrustEvidence] = Field(default_factory=list, max_length=20)
+
+
+def key_agent(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "Send 'Authorization: Bearer <agent api key>'")
+    agent = workspace.agent_for_key(authorization[7:].strip())
+    if not agent:
+        raise HTTPException(401, "Invalid or disabled API key")
+    return agent
+
+
+@app.post("/api/v1/gate/check")
+def gate_check(body: GateRequest, agent: dict = Depends(key_agent)):
+    """The integration surface: an external agent asks before acting. The agent identity comes from its key, never the body."""
+    req = TrustRequest(agent_id=agent["id"], goal=body.goal, action=body.action, parameters=body.parameters,
+                       reasoning=body.reasoning, evidence=body.evidence)
+    result = _decide(req, agent)
+    workspace.save_decision(result, source="api")
+    return {"decision_id": result["evaluation_id"], "decision": result["decision"], "allowed": result["decision"] == "ALLOW",
+            "reason": result["reason"], "risk_score": result["risk_score"], "risk_level": result["risk_level"],
+            "stages": result["stages"]}
+
+
+@app.get("/api/v1/gate/decisions/{decision_id}")
+def gate_decision(decision_id: str, agent: dict = Depends(key_agent)):
+    """Poll a REVIEW decision until a human approves or rejects it."""
+    d = workspace.get_decision(decision_id)
+    if not d or d["agent_id"] != agent["id"]:
+        raise HTTPException(404, "Decision not found")
+    status = d["review_status"]
+    allowed = d["decision"] == "ALLOW" or status == "APPROVED"
+    return {"decision_id": decision_id, "decision": d["decision"], "review_status": status, "allowed": allowed, "reason": d["reason"]}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -34,16 +35,60 @@ def database_path():
 _initialized = set()
 
 
+def database_url():
+    return os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or None
+
+
+def storage_backend():
+    return "postgres" if database_url() else "sqlite"
+
+
+class _PgConn:
+    """Minimal sqlite-style facade over a psycopg connection so one code path serves both stores."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    @staticmethod
+    def _translate(sql):
+        sql = sql.replace("?", "%s")
+        if re.match(r"\s*INSERT OR IGNORE", sql, re.I):
+            sql = re.sub(r"INSERT OR IGNORE", "INSERT", sql, count=1, flags=re.I) + " ON CONFLICT DO NOTHING"
+        elif re.match(r"\s*INSERT OR REPLACE INTO product_listings", sql, re.I):
+            sql = re.sub(r"INSERT OR REPLACE", "INSERT", sql, count=1, flags=re.I) + (
+                " ON CONFLICT (product_id) DO UPDATE SET provider=EXCLUDED.provider, search_id=EXCLUDED.search_id,"
+                " record_json=EXCLUDED.record_json, retrieved_at=EXCLUDED.retrieved_at")
+        return sql
+
+    def execute(self, sql, params=()):
+        if sql.strip().upper().startswith(("PRAGMA", "BEGIN")):
+            return self._conn.cursor()
+        cur = self._conn.cursor()
+        cur.execute(self._translate(sql), tuple(params))
+        return cur
+
+    def executescript(self, script):
+        for stmt in script.split(";"):
+            if stmt.strip():
+                self.execute(stmt)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 @contextmanager
 def connect():
     path = database_path()
     if path not in _initialized:
         # Serverless hosts may skip the lifespan hook or start with an empty /tmp.
         init_db()
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 10000")
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = _open()
     try:
         yield conn
         conn.commit()
@@ -54,12 +99,20 @@ def connect():
         conn.close()
 
 
-def init_db():
-    path = database_path()
-    _initialized.add(path)
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with connect() as c:
-        c.executescript("""
+def _open():
+    url = database_url()
+    if url:
+        import psycopg
+        from psycopg.rows import dict_row
+        return _PgConn(psycopg.connect(url, row_factory=dict_row, connect_timeout=10, prepare_threshold=None))
+    conn = sqlite3.connect(database_path(), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+SCHEMA = """
           CREATE TABLE IF NOT EXISTS policies (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL,
             config_json TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL
@@ -72,8 +125,7 @@ def init_db():
           );
           CREATE TABLE IF NOT EXISTS executions (
             id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL UNIQUE,
-            action_json TEXT NOT NULL, created_at TEXT NOT NULL,
-            FOREIGN KEY(evaluation_id) REFERENCES evaluations(id)
+            action_json TEXT NOT NULL, created_at TEXT NOT NULL
           );
           CREATE TABLE IF NOT EXISTS product_listings (
             product_id TEXT PRIMARY KEY, provider TEXT NOT NULL, search_id TEXT NOT NULL,
@@ -83,10 +135,33 @@ def init_db():
             id TEXT PRIMARY KEY, evaluation_id TEXT, event_type TEXT NOT NULL,
             details_json TEXT NOT NULL, created_at TEXT NOT NULL
           );
-        """)
+          CREATE TABLE IF NOT EXISTS agents (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, domain TEXT NOT NULL,
+            scopes_json TEXT NOT NULL, limits_json TEXT NOT NULL, key_hash TEXT,
+            key_prefix TEXT, enabled INTEGER NOT NULL, created_at TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS trust_decisions (
+            id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task_id TEXT, decision TEXT NOT NULL,
+            review_status TEXT, source TEXT NOT NULL, result_json TEXT NOT NULL,
+            execution_json TEXT, created_at TEXT NOT NULL
+          )
+"""
+
+
+def init_db():
+    path = database_path()
+    _initialized.add(path)
+    if not database_url():
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with connect() as c:
+        c.executescript(SCHEMA)
         for pid, name, config in DEFAULT_POLICIES:
             c.execute("INSERT OR IGNORE INTO policies VALUES (?, ?, 1, ?, 1, ?)",
                       (pid, name, json.dumps(config), utc_now()))
+        from .trust import AGENTS
+        for aid, a in AGENTS.items():
+            c.execute("INSERT OR IGNORE INTO agents VALUES (?, ?, ?, ?, ?, NULL, NULL, 1, ?)",
+                      (aid, a["name"], a["domain"], json.dumps(a["scopes"]), json.dumps(a["limits"]), utc_now()))
 
 
 def list_policies():
