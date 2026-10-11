@@ -27,6 +27,7 @@ import {
 } from './liveContract';
 import { newId } from '@/lib/ids';
 import type { AgentAction, ApiExchange, EvaluationRequest, ExecutionResult, Product } from '@/types';
+import { getWorkspaceId, WORKSPACE_HEADER } from '@/lib/workspace';
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -140,7 +141,11 @@ export function createHttpClient(baseUrl: string) {
       res = await fetch(url, {
         method: init.method,
         signal: controller.signal,
-        headers: { Accept: 'application/json', ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        headers: {
+          Accept: 'application/json',
+          [WORKSPACE_HEADER]: getWorkspaceId(),
+          ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
     } catch (err) {

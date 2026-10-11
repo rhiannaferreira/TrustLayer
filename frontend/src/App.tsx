@@ -11,6 +11,7 @@ import { TestConsolePage } from '@/pages/TestConsolePage';
 import { InvestigatePage } from '@/pages/InvestigatePage';
 import { ResearchPage } from '@/pages/ResearchPage';
 import { TrustGatePage } from '@/pages/TrustGatePage';
+import { RulesPage } from '@/pages/RulesPage';
 import { DemoPage } from '@/pages/DemoPage';
 
 export function AppRoutes() {
@@ -19,6 +20,7 @@ export function AppRoutes() {
       <Route path="demo" element={<DemoPage />} />
       <Route element={<AppShell />}>
         <Route index element={<TrustGatePage />} />
+        <Route path="rules" element={<RulesPage />} />
         <Route path="overview" element={<OverviewPage />} />
         <Route path="playground" element={<PlaygroundPage />} />
         <Route path="research" element={<ResearchPage />} />

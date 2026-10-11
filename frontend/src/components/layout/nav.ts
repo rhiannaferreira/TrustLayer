@@ -1,4 +1,4 @@
-import { LayoutDashboard, Bot, Activity, Swords, ScrollText, FileClock, Network, FlaskConical, Globe, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, Bot, Activity, Swords, ScrollText, FileClock, Network, FlaskConical, Globe, ShieldCheck, SlidersHorizontal, type LucideIcon } from 'lucide-react';
 
 export interface NavItem {
   to: string;
@@ -9,6 +9,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Trust Gate', icon: ShieldCheck, description: 'Authorize any agent action' },
+  { to: '/rules', label: 'Your Rules', icon: SlidersHorizontal, description: 'Set the rules your agents must follow' },
   { to: '/overview', label: 'Overview', icon: LayoutDashboard, description: 'Command center' },
   { to: '/playground', label: 'Agent Playground', icon: Bot, description: 'Run an agent end to end' },
   { to: '/research', label: 'Web Research', icon: Globe, description: 'Search the web for any topic' },
