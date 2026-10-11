@@ -35,6 +35,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('Your rules', () => {
   it('saves a new spending limit to this browser’s sandbox', async () => {
     const patches = backend();
+    const consoleErrors = vi.spyOn(console, 'error');
     const user = userEvent.setup();
     render(
       <MemoryRouter>
@@ -59,5 +60,8 @@ describe('Your rules', () => {
     expect(patches[0].body).toEqual({ config: { max_amount: 150 } });
     expect(patches[0].workspace).toBe(getWorkspaceId());
     expect(await screen.findByText('now $150.00')).toBeInTheDocument();
+    // Each rule card must stay unique after a save (cards share version numbers).
+    expect(screen.getAllByRole('list', { name: 'Approved vendors' })).toHaveLength(1);
+    expect(consoleErrors.mock.calls.flat().join(' ')).not.toMatch(/same key/);
   });
 });

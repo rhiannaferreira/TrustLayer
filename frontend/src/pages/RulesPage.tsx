@@ -134,10 +134,10 @@ export function RulesPage() {
             <EmptyState icon={<ListChecks className="h-4 w-4" />} title={loading ? 'Loading your rules…' : 'Rules not loaded'} description={loading ? undefined : 'Make sure the backend is reachable, then press Reload.'} />
           ) : (
             <div className="grid gap-4 lg:grid-cols-2">
-              {spending && <SpendingRule key={`${spending.version}`} policy={spending} onSave={(p) => save(spending.id, p, 'Spending limit')} />}
+              {spending && <SpendingRule key={`${spending.id}:${spending.version}`} policy={spending} onSave={(p) => save(spending.id, p, 'Spending limit')} />}
               {vendors && (
                 <ListRule
-                  key={`${vendors.version}`}
+                  key={`${vendors.id}:${vendors.version}`}
                   policy={vendors}
                   field="vendors"
                   icon={<Store className="h-3.5 w-3.5" />}
@@ -150,7 +150,7 @@ export function RulesPage() {
               )}
               {actions && (
                 <ListRule
-                  key={`${actions.version}`}
+                  key={`${actions.id}:${actions.version}`}
                   policy={actions}
                   field="actions"
                   icon={<ListChecks className="h-3.5 w-3.5" />}
@@ -165,7 +165,7 @@ export function RulesPage() {
                 <div className="space-y-3">
                   {evidence && (
                     <SwitchRule
-                      key={`${evidence.version}`}
+                      key={`${evidence.id}:${evidence.version}`}
                       policy={evidence}
                       field="require_review_for_suspicious"
                       title="Suspicious evidence"
@@ -175,7 +175,7 @@ export function RulesPage() {
                   )}
                   {quality && (
                     <SwitchRule
-                      key={`${quality.version}`}
+                      key={`${quality.id}:${quality.version}`}
                       policy={quality}
                       field="require_review_if_insufficient"
                       title="Thin evidence"
